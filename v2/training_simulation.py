@@ -18,12 +18,12 @@ import torch.optim as optim
 
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, Subset
-
+import os
 # =========================================================
 # CONFIG
 # =========================================================
 NUM_AGENTS = 3
-ROUNDS = 50
+ROUNDS = 100
 LOCAL_EPOCHS = 1
 BATCH_SIZE = 64
 
