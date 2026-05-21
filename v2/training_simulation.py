@@ -1,13 +1,16 @@
 # =========================================================
 # INSTALL (run once)
 # =========================================================
-# !pip install torch torchvision matplotlib pandas
+# !pip install torch torchvision matplotlib pandas pillow
 
 # =========================================================
 # IMPORTS
 # =========================================================
 import time
 import random
+import os
+import xml.etree.ElementTree as ET
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -16,16 +19,21 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from torchvision import datasets, transforms
-from torch.utils.data import DataLoader, Subset
-import os
+from PIL import Image
+from torchvision import transforms
+from torch.utils.data import DataLoader, Dataset
+
 # =========================================================
 # CONFIG
 # =========================================================
 NUM_AGENTS = 3
+VIDEOS_PER_AGENT = 10       # each agent trains on 10 MVI sequences
+TEST_VIDEOS = 10            # held-out videos for evaluation
+MAX_FRAMES_PER_VIDEO = 50   # sample up to N frames per sequence (speed vs. fidelity)
 ROUNDS = 100
 LOCAL_EPOCHS = 1
 BATCH_SIZE = 64
+IMG_SIZE = 64               # crop resize target
 
 ARCHITECTURE = "peer_to_peer"
 DELAY_MODEL = "kde"   # Options: "kde" or "wgan"
@@ -39,9 +47,23 @@ DOWNLOAD_STD = 0.05
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # =========================================================
+# PATHS
+# =========================================================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DETRAC_IMAGES_DIR = os.path.join(BASE_DIR, "..", "DETRAC-Images", "DETRAC-Images")
+DETRAC_ANNOT_DIR  = os.path.join(BASE_DIR, "..", "DETRAC-Train-Annotations-XML",
+                                 "DETRAC-Train-Annotations-XML")
+
+# =========================================================
+# VEHICLE CLASS MAP  (car / van / bus / others)
+# =========================================================
+VEHICLE_CLASSES = {"car": 0, "van": 1, "bus": 2, "others": 3}
+NUM_CLASSES = len(VEHICLE_CLASSES)
+
+# =========================================================
 # LOAD SYNTHETIC DELAYS
 # =========================================================
-delay_file = f"{os.path.dirname(__file__)}/synthetic_interarrival_{DELAY_MODEL}.csv"
+delay_file = os.path.join(BASE_DIR, f"synthetic_interarrival_{DELAY_MODEL}.csv")
 
 synthetic_delays = pd.read_csv(
     delay_file,
@@ -68,7 +90,86 @@ def sample_delay():
     return max(float(d), 1e-6)
 
 # =========================================================
-# CNN MODEL
+# DETRAC DATASET
+# =========================================================
+class DETRACDataset(Dataset):
+    """
+    Crops individual vehicle bounding boxes from DETRAC frames and
+    returns (image_tensor, vehicle_class_index) pairs.
+
+    vehicle_type → label: car=0, van=1, bus=2, others=3
+    """
+
+    def __init__(self, video_dirs, annotation_dir, transform=None,
+                 max_frames_per_video=MAX_FRAMES_PER_VIDEO):
+
+        self.samples = []   # list of (img_path, (left,top,w,h), label)
+        self.transform = transform
+
+        for video_dir in video_dirs:
+            seq_name = os.path.basename(video_dir)
+            xml_path = os.path.join(annotation_dir, f"{seq_name}.xml")
+
+            if not os.path.exists(xml_path):
+                continue
+
+            tree = ET.parse(xml_path)
+            root = tree.getroot()
+            frames = root.findall("frame")
+
+            # Evenly sub-sample frames to cap dataset size per video
+            step = max(1, len(frames) // max_frames_per_video)
+            sampled = frames[::step][:max_frames_per_video]
+
+            for frame_elem in sampled:
+                frame_num = int(frame_elem.get("num"))
+                img_path  = os.path.join(video_dir, f"img{frame_num:05d}.jpg")
+
+                if not os.path.exists(img_path):
+                    continue
+
+                for target in frame_elem.findall(".//target"):
+                    box_elem  = target.find("box")
+                    attr_elem = target.find("attribute")
+
+                    if box_elem is None or attr_elem is None:
+                        continue
+
+                    vtype = attr_elem.get("vehicle_type", "others")
+                    label = VEHICLE_CLASSES.get(vtype, 3)
+
+                    left   = float(box_elem.get("left"))
+                    top    = float(box_elem.get("top"))
+                    width  = float(box_elem.get("width"))
+                    height = float(box_elem.get("height"))
+
+                    self.samples.append(
+                        (img_path, (left, top, width, height), label)
+                    )
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        img_path, (left, top, w, h), label = self.samples[idx]
+
+        img = Image.open(img_path).convert("RGB")
+        iw, ih = img.size
+
+        x1 = max(0, int(left))
+        y1 = max(0, int(top))
+        x2 = min(iw, int(left + w))
+        y2 = min(ih, int(top + h))
+
+        crop = img.crop((x1, y1, x2, y2)) if x2 > x1 and y2 > y1 else img
+
+        if self.transform:
+            crop = self.transform(crop)
+
+        return crop, label
+
+# =========================================================
+# CNN MODEL  (64×64 input → 4 vehicle classes)
 # =========================================================
 class SimpleCNN(nn.Module):
 
@@ -79,18 +180,18 @@ class SimpleCNN(nn.Module):
 
             nn.Conv2d(3, 16, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.MaxPool2d(2,2),
+            nn.MaxPool2d(2, 2),                 # 64 → 32
 
             nn.Conv2d(16, 32, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.MaxPool2d(2,2),
+            nn.MaxPool2d(2, 2),                 # 32 → 16
 
             nn.Flatten(),
 
-            nn.Linear(32 * 8 * 8, 128),
+            nn.Linear(32 * 16 * 16, 128),
             nn.ReLU(),
 
-            nn.Linear(128, 10)
+            nn.Linear(128, NUM_CLASSES)         # 4 vehicle classes
         )
 
     def forward(self, x):
@@ -270,61 +371,56 @@ def evaluate(model, loader):
     return correct / total
 
 # =========================================================
-# DATASET
+# DATASET  —  DETRAC vehicle crops
 # =========================================================
 transform = transforms.Compose([
+    transforms.Resize((IMG_SIZE, IMG_SIZE)),
     transforms.ToTensor()
 ])
 
-train_data = datasets.CIFAR10(
-    root="./data",
-    train=True,
-    download=True,
-    transform=transform
-)
+# Collect all MVI folders that have a matching annotation XML
+all_video_dirs = sorted([
+    os.path.join(DETRAC_IMAGES_DIR, d)
+    for d in os.listdir(DETRAC_IMAGES_DIR)
+    if os.path.isdir(os.path.join(DETRAC_IMAGES_DIR, d))
+    and os.path.exists(os.path.join(DETRAC_ANNOT_DIR, d + ".xml"))
+])
 
-test_data = datasets.CIFAR10(
-    root="./data",
-    train=False,
-    download=True,
-    transform=transform
-)
-
-test_loader = DataLoader(
-    test_data,
-    batch_size=128
-)
-
-# =========================================================
-# SPLIT DATA ACROSS AGENTS
-# =========================================================
-indices = np.random.permutation(len(train_data))
-
-sizes = np.random.multinomial(
-    len(indices),
-    [1 / NUM_AGENTS] * NUM_AGENTS
-)
-
-splits = []
-
-start = 0
-
-for sz in sizes:
-
-    splits.append(
-        Subset(
-            train_data,
-            indices[start:start+sz]
-        )
+total_needed = NUM_AGENTS * VIDEOS_PER_AGENT + TEST_VIDEOS
+if len(all_video_dirs) < total_needed:
+    raise RuntimeError(
+        f"Not enough annotated videos: need {total_needed}, found {len(all_video_dirs)}"
     )
 
-    start += sz
+# Shuffle once for reproducibility, then carve out splits
+rng = np.random.default_rng(42)
+shuffled = [all_video_dirs[i] for i in rng.permutation(len(all_video_dirs))]
+
+agent_video_splits = [
+    shuffled[i * VIDEOS_PER_AGENT:(i + 1) * VIDEOS_PER_AGENT]
+    for i in range(NUM_AGENTS)
+]
+test_video_dirs = shuffled[NUM_AGENTS * VIDEOS_PER_AGENT:
+                           NUM_AGENTS * VIDEOS_PER_AGENT + TEST_VIDEOS]
+
+print("Building agent datasets (parsing XML annotations & indexing crops)...")
+agent_datasets = []
+for i, video_dirs in enumerate(agent_video_splits):
+    ds = DETRACDataset(video_dirs, DETRAC_ANNOT_DIR, transform=transform)
+    print(f"  Agent {i}: {len(video_dirs)} videos → {len(ds)} crop samples")
+    agent_datasets.append(ds)
+
+print("Building test dataset...")
+test_dataset = DETRACDataset(test_video_dirs, DETRAC_ANNOT_DIR, transform=transform)
+print(f"  Test set: {len(test_video_dirs)} videos → {len(test_dataset)} crop samples")
+
+test_loader = DataLoader(test_dataset, batch_size=128)
 
 # =========================================================
 # CREATE AGENTS
 # =========================================================
 agents = [
-    EdgeAgent(i, splits[i])
+    EdgeAgent(i, agent_datasets[i])
     for i in range(NUM_AGENTS)
 ]
 
