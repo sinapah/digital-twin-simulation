@@ -34,8 +34,9 @@ VIDEOS_PER_AGENT = 10       # each agent trains on 10 MVI sequences
 TEST_VIDEOS = 10            # held-out videos for evaluation
 MAX_FRAMES_PER_VIDEO = 50   # sample up to N frames per sequence (speed vs. fidelity)
 ROUNDS = 100
-LOCAL_EPOCHS = 1
+LOCAL_EPOCHS = 3
 BATCH_SIZE = 64
+LEARNING_RATE = 1e-3        # Adam with a lower LR converges more stably than SGD 0.01
 IMG_SIZE = 64               # crop resize target
 
 ARCHITECTURE = "peer_to_peer"
@@ -246,6 +247,13 @@ class DETRACDataset(Dataset):
 
 # =========================================================
 # CNN MODEL  (64×64 input → 4 vehicle classes)
+#
+# Improvements over the original 2-layer network:
+#   - Three conv blocks instead of two, giving a deeper feature hierarchy
+#   - BatchNorm after each conv: normalises activations across the batch,
+#     stabilising training and reducing sensitivity to initialisation
+#   - Dropout before the final classifier: regularises the fully-connected
+#     head and reduces over-fitting to the limited training videos
 # =========================================================
 class SimpleCNN(nn.Module):
 
@@ -254,20 +262,31 @@ class SimpleCNN(nn.Module):
 
         self.net = nn.Sequential(
 
-            nn.Conv2d(3, 16, kernel_size=3, padding=1),
+            # Block 1 — 64 → 32
+            nn.Conv2d(3, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
             nn.ReLU(),
-            nn.MaxPool2d(2, 2),                 # 64 → 32
+            nn.MaxPool2d(2, 2),
 
-            nn.Conv2d(16, 32, kernel_size=3, padding=1),
+            # Block 2 — 32 → 16
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
             nn.ReLU(),
-            nn.MaxPool2d(2, 2),                 # 32 → 16
+            nn.MaxPool2d(2, 2),
+
+            # Block 3 — 16 → 8
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),
 
             nn.Flatten(),
 
-            nn.Linear(32 * 16 * 16, 128),
+            nn.Linear(128 * 8 * 8, 256),
             nn.ReLU(),
+            nn.Dropout(p=0.4),
 
-            nn.Linear(128, NUM_CLASSES)         # 4 vehicle classes
+            nn.Linear(256, NUM_CLASSES),
         )
 
     def forward(self, x):
@@ -336,7 +355,10 @@ class EdgeAgent:
         """
         self.model.load_state_dict(global_weights)
 
-        optimizer = optim.SGD(self.model.parameters(), lr=0.01)
+        # Adam adapts the learning rate per parameter, which converges more
+        # stably than SGD across heterogeneous federated agents whose local
+        # data distributions can differ significantly between videos.
+        optimizer = optim.Adam(self.model.parameters(), lr=LEARNING_RATE)
         # Weighted loss: rare classes (bus, others) get higher weight so
         # that the model does not trivially optimise for majority classes.
         loss_fn = nn.CrossEntropyLoss(
@@ -427,24 +449,36 @@ class EdgeAgent:
         self.model.load_state_dict(global_weights)
 
 # =========================================================
-# FEDERATED AGGREGATION
+# FEDERATED AGGREGATION  (dataset-size weighted)
 # =========================================================
-def aggregate_models(models):
+def aggregate_models(models, dataset_sizes):
+    """
+    Weighted FedAvg: each agent's update is weighted by its dataset size.
 
+    Uniform averaging gives equal weight to all agents regardless of how
+    much data they trained on, which can skew the global model toward
+    agents with small or unrepresentative datasets.  Weighting by size
+    ensures that agents with larger, more representative video sets
+    contribute proportionally more to the aggregated model.
+    """
     global_model = SimpleCNN().to(DEVICE)
 
+    total = sum(dataset_sizes)
+
     agg = {
-        k: torch.zeros_like(v)
+        k: torch.zeros_like(v, dtype=torch.float32)
         for k, v in global_model.state_dict().items()
     }
 
-    for m in models:
-
+    for m, sz in zip(models, dataset_sizes):
+        weight = sz / total
         for k in agg:
-            agg[k] += m[k]
+            agg[k] += weight * m[k].float()
 
-    for k in agg:
-        agg[k] /= len(models)
+    # Restore original dtypes before loading (e.g. BatchNorm's
+    # num_batches_tracked is a Long and must stay that way).
+    ref = global_model.state_dict()
+    agg = {k: agg[k].to(ref[k].dtype) for k in agg}
 
     global_model.load_state_dict(agg)
 
@@ -576,9 +610,20 @@ def evaluate_per_condition(model, dataset):
 # =========================================================
 # DATASET  —  DETRAC vehicle crops
 # =========================================================
-transform = transforms.Compose([
+# Training transform includes augmentation to improve generalisation
+# to different lighting, camera angles, and weather conditions.
+# Test transform applies only geometric normalisation (no augmentation)
+# so evaluation is deterministic and comparable across rounds.
+train_transform = transforms.Compose([
     transforms.Resize((IMG_SIZE, IMG_SIZE)),
-    transforms.ToTensor()
+    transforms.RandomHorizontalFlip(),
+    transforms.ColorJitter(brightness=0.3, contrast=0.2, saturation=0.2),
+    transforms.ToTensor(),
+])
+
+test_transform = transforms.Compose([
+    transforms.Resize((IMG_SIZE, IMG_SIZE)),
+    transforms.ToTensor(),
 ])
 
 # Collect all MVI folders that have a matching annotation XML
@@ -609,12 +654,12 @@ test_video_dirs = shuffled[NUM_AGENTS * VIDEOS_PER_AGENT:
 print("Building agent datasets (parsing XML annotations & indexing crops)...")
 agent_datasets = []
 for i, video_dirs in enumerate(agent_video_splits):
-    ds = DETRACDataset(video_dirs, DETRAC_ANNOT_DIR, transform=transform)
+    ds = DETRACDataset(video_dirs, DETRAC_ANNOT_DIR, transform=train_transform)
     print(f"  Agent {i}: {len(video_dirs)} videos → {len(ds)} crop samples")
     agent_datasets.append(ds)
 
 print("Building test dataset...")
-test_dataset = DETRACDataset(test_video_dirs, DETRAC_ANNOT_DIR, transform=transform)
+test_dataset = DETRACDataset(test_video_dirs, DETRAC_ANNOT_DIR, transform=test_transform)
 print(f"  Test set: {len(test_video_dirs)} videos → {len(test_dataset)} crop samples")
 
 test_loader = DataLoader(test_dataset, batch_size=128)
@@ -705,7 +750,7 @@ for r in range(ROUNDS):
     # -----------------------------------
     # FEDERATED AGGREGATION
     # -----------------------------------
-    global_model = aggregate_models(updates)
+    global_model = aggregate_models(updates, [len(a.data) for a in agents])
 
     # -----------------------------------
     # DISTRIBUTE GLOBAL MODEL  (all agents download concurrently)
