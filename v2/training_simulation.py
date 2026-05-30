@@ -40,7 +40,7 @@ LEARNING_RATE = 1e-3        # Adam with a lower LR converges more stably than SG
 IMG_SIZE = 64               # crop resize target
 
 ARCHITECTURE = "peer_to_peer"
-DELAY_MODEL = "kde"   # Options: "kde" or "wgan"
+DELAY_MODEL = "wgan"   # Options: "kde" or "wgan"
 
 UPLOAD_MEAN = 0.3
 UPLOAD_STD = 0.1
