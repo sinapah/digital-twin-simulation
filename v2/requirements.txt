@@ -2,5 +2,6 @@ opencv-python
 numpy
 pandas
 matplotlib
+scipy
 torch
 torchvision
