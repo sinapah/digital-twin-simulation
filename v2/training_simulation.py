@@ -867,7 +867,7 @@ plt.xlabel("Round")
 plt.ylabel("Accuracy")
 plt.grid(True)
 plt.tight_layout()
-plt.savefig(f"accuracy_{DELAY_MODEL}.png", dpi=300)
+plt.savefig(f"./visualizations/accuracy_{DELAY_MODEL}.png", dpi=300)
 plt.close()
 
 # =========================================================
@@ -886,7 +886,7 @@ plt.ylabel("Accuracy")
 plt.legend()
 plt.grid(True)
 plt.tight_layout()
-plt.savefig(f"per_class_accuracy_{DELAY_MODEL}.png", dpi=300)
+plt.savefig(f"./visualizations/per_class_accuracy_{DELAY_MODEL}.png", dpi=300)
 plt.close()
 
 # =========================================================
@@ -902,7 +902,7 @@ for ckey, cdict in final_condition_results.items():
     plt.ylim(0, 100)
     plt.grid(axis="y")
     plt.tight_layout()
-    plt.savefig(f"domain_shift_{ckey}_{DELAY_MODEL}.png", dpi=300)
+    plt.savefig(f"./visualizations/domain_shift_{ckey}_{DELAY_MODEL}.png", dpi=300)
     plt.close()
 
 # =========================================================
@@ -915,7 +915,7 @@ plt.xlabel("Round")
 plt.ylabel("Time (s)")
 plt.grid(True)
 plt.tight_layout()
-plt.savefig(f"round_time_{DELAY_MODEL}.png", dpi=300)
+plt.savefig(f"./visualizations/round_time_{DELAY_MODEL}.png", dpi=300)
 plt.close()
 
 # =========================================================
@@ -942,7 +942,7 @@ plt.ylabel("Time (s)")
 plt.legend(loc="upper right")
 plt.grid(True)
 plt.tight_layout()
-plt.savefig(f"time_breakdown_{DELAY_MODEL}.png", dpi=300)
+plt.savefig(f"./visualizations/time_breakdown_{DELAY_MODEL}.png", dpi=300)
 plt.close()
 
 # =========================================================
@@ -955,7 +955,7 @@ plt.xlabel("Delay (µs)")
 plt.ylabel("Frequency")
 plt.grid(True)
 plt.tight_layout()
-plt.savefig(f"delay_distribution_{DELAY_MODEL}.png", dpi=300)
+plt.savefig(f"./visualizations/delay_distribution_{DELAY_MODEL}.png", dpi=300)
 plt.close()
 
 print("\nSaved:")

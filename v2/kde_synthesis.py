@@ -55,7 +55,7 @@ plt.legend()
 plt.grid(True)
 
 plt.tight_layout()
-plt.savefig("histogram_comparison.png", dpi=300)
+plt.savefig("./visualizations/histogram_comparison.png", dpi=300)
 plt.close()
 
 # =========================
