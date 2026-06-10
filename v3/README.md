@@ -42,7 +42,7 @@ sender.py processes on sender VM  --->  receiver_training.py on receiver VM
                                       training happens here
 ```
 
-The sender transmits labeled UA-DETRAC vehicle crops. The receiver trains from those live samples. When a sender stops transmitting long enough to exceed `OUTAGE_TIMEOUT`, the receiver marks that sender as being in outage. If fallback is enabled, the receiver reads local historical DETRAC samples and injects them into training with synthetic delays.
+The sender transmits labeled UA-DETRAC vehicle crops. The receiver trains from those live samples. When a sender stops transmitting long enough to exceed `OUTAGE_TIMEOUT`, the receiver marks that sender as being in outage. If fallback is enabled, the receiver reads local historical DETRAC samples and injects them into the same per-sender training queue used by live samples, paced by fixed/KDE/WGAN synthetic delays.
 
 ### Receiver/training VM
 
@@ -55,12 +55,29 @@ make train-receiver FALLBACK_MODE=kde ROUNDS=100
 
 The Makefile automatically uses `v3/venv/bin/python` if it exists, then `v3/.venv/bin/python`, then `python3`.
 
+By default, the online receiver reserves the first 60 sorted UA-DETRAC folders for live sender traffic, uses 10 later folders for evaluation, and uses the last 20 sorted UA-DETRAC folders as the receiver-side fallback repository. Override those counts with:
+
+```bash
+make train-receiver \
+  FALLBACK_MODE=kde \
+  ROUNDS=100 \
+  LIVE_RESERVED_VIDEO_COUNT=60 \
+  FALLBACK_VIDEO_COUNT=20 \
+  TIME_SCALE=1.0
+```
+
 `FALLBACK_MODE` can be:
 
 - `none`: train only on live samples; missing sender data is not replaced.
 - `fixed`: use local historical samples with fixed/immediate replay timing.
 - `kde`: use local historical samples paced by KDE synthetic delays.
 - `wgan`: use local historical samples paced by WGAN synthetic delays.
+
+For short demos where KDE/WGAN delays make fallback arrivals too sparse to see in every round, lower `TIME_SCALE` or increase `ROUND_COLLECT_SECONDS`, for example:
+
+```bash
+make train-receiver FALLBACK_MODE=kde ROUNDS=100 TIME_SCALE=0.1 ROUND_COLLECT_SECONDS=5
+```
 
 Receiver-side training outputs:
 
@@ -78,12 +95,22 @@ cd v3
 make senders TARGET_HOST=<receiver-vm-ip>
 ```
 
-This starts three camera sender processes. By default, `camera0` pauses during elapsed-time windows `20:35,55:70`; `camera1` and `camera2` stream continuously.
+This starts three camera sender processes. By default, each sender streams 20 sorted UA-DETRAC folders:
+
+- `camera0`: first 20 folders, starting at index `0`.
+- `camera1`: second 20 folders, starting at index `20`.
+- `camera2`: third 20 folders, starting at index `40`.
+
+By default, `camera0` pauses during elapsed-time windows `20:35,55:70`; `camera1` and `camera2` stream continuously.
 
 Override the outage windows like this:
 
 ```bash
-make senders TARGET_HOST=<receiver-vm-ip> OUTAGE_WINDOWS=10:20,40:50
+make senders \
+  TARGET_HOST=<receiver-vm-ip> \
+  SENDER0_OUTAGE_WINDOWS=10:20,40:50 \
+  SENDER1_OUTAGE_WINDOWS=30:45 \
+  SENDER2_OUTAGE_WINDOWS=
 ```
 
 ### Receiver resource usage
@@ -204,7 +231,7 @@ v3/visualizations/
 
 ## Run the logging-only live sender/receiver demo
 
-Use this only when you want to stream UA-DETRAC samples over UDP and observe outage detection/fallback logging without training.
+Use this only when you want to stream UA-DETRAC samples over UDP and observe outage detection/fallback logging without training. Historical image replay for training is implemented in `receiver_training.py`; this logging-only receiver records synthetic fallback arrival events.
 
 ### Receiver VM
 
@@ -240,9 +267,9 @@ make senders TARGET_HOST=<receiver-vm-ip>
 
 This starts three sender processes:
 
-- `camera0`: includes scheduled outage windows by default.
-- `camera1`: continuous stream.
-- `camera2`: continuous stream.
+- `camera0`: first 20 sorted UA-DETRAC folders; includes scheduled outage windows by default.
+- `camera1`: second 20 sorted UA-DETRAC folders; continuous stream by default.
+- `camera2`: third 20 sorted UA-DETRAC folders; continuous stream by default.
 
 Default sender outage windows are:
 
@@ -255,7 +282,11 @@ These are elapsed seconds from sender startup. During those windows the sender p
 Override them like this:
 
 ```bash
-make senders TARGET_HOST=<receiver-vm-ip> OUTAGE_WINDOWS=10:20,40:50
+make senders \
+  TARGET_HOST=<receiver-vm-ip> \
+  SENDER0_OUTAGE_WINDOWS=10:20,40:50 \
+  SENDER1_OUTAGE_WINDOWS=30:45 \
+  SENDER2_OUTAGE_WINDOWS=
 ```
 
 ### One-VM local demo
@@ -290,9 +321,11 @@ Training simulation duration depends on scenario count, rounds, local epochs, fr
 The live sender demo duration depends on selected sequence length and FPS. Defaults use:
 
 ```text
-SEQUENCE_COUNT=10
+SEQUENCE_COUNT=20
 FPS=25
-OUTAGE_WINDOWS=20:35,55:70
+SENDER0_OUTAGE_WINDOWS=20:35,55:70
+SENDER1_OUTAGE_WINDOWS=
+SENDER2_OUTAGE_WINDOWS=
 ```
 
 So sender runtime is approximately the selected frame count divided by FPS, plus outage pause time for `camera0`.

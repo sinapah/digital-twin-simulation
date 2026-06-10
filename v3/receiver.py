@@ -22,11 +22,19 @@ class DelaySampler:
         self.fixed_delay = fixed_delay
         self.synthetic = {}
         for name in ("kde", "wgan"):
-            path = os.path.join(V2_DIR, f"synthetic_interarrival_{name}.csv")
-            if os.path.exists(path):
+            paths = [
+                os.path.join(BASE_DIR, f"synthetic_interarrival_{name}.csv"),
+                os.path.join(V2_DIR, f"synthetic_interarrival_{name}.csv"),
+            ]
+            path = next((candidate for candidate in paths if os.path.exists(candidate)), None)
+            if path is not None:
                 values = pd.read_csv(path, header=None).values.flatten()
                 values = values[values > 1e-6]
                 self.synthetic[name] = values.astype(float)
+        if mode in ("kde", "wgan") and mode not in self.synthetic:
+            raise FileNotFoundError(
+                f"Could not find synthetic_interarrival_{mode}.csv in v3 or v2."
+            )
 
     def sample(self) -> float:
         if self.mode == "fixed":
@@ -243,6 +251,8 @@ class Receiver:
             delay = self.delay_sampler.sample()
             if delay > 0:
                 stop_event.wait(delay)
+            else:
+                stop_event.wait(self.args.min_fallback_interval)
             if stop_event.is_set():
                 break
             now = time.perf_counter()
@@ -274,6 +284,7 @@ def parse_args():
         default="none",
     )
     parser.add_argument("--fixed-fallback-delay", type=float, default=0.0)
+    parser.add_argument("--min-fallback-interval", type=float, default=0.01)
     parser.add_argument(
         "--output",
         default=os.path.join(BASE_DIR, "outputs", "receiver_interarrival_log.csv"),

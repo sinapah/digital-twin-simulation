@@ -20,25 +20,35 @@ from torchvision import transforms
 
 from training_simulation import (
     CLASS_NAMES,
+    DETRAC_ANNOT_DIR,
     DEVICE,
+    DETRACDataset,
     NUM_CLASSES,
     OUTPUT_DIR,
     DelaySampler,
     ResourceSampler,
     SimpleCNN,
     SimulationConfig,
-    build_datasets,
     compute_class_weights,
     ensure_dirs,
     evaluate,
+    list_annotated_videos,
     set_seed,
 )
 
 
 class LiveReceiver:
-    def __init__(self, args, transform):
+    def __init__(
+        self,
+        args,
+        transform,
+        historical_datasets,
+        delay_sampler: DelaySampler,
+    ):
         self.args = args
         self.transform = transform
+        self.historical_datasets = historical_datasets
+        self.delay_sampler = delay_sampler
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind((args.host, args.port))
         self.stop_event = threading.Event()
@@ -46,13 +56,16 @@ class LiveReceiver:
         self.prev_sender_ts: Dict[str, float] = {}
         self.prev_global_ts: Optional[float] = None
         self.outage_active: Dict[str, bool] = defaultdict(bool)
+        self.fallback_stops: Dict[str, threading.Event] = {}
+        self.fallback_indices: Dict[str, int] = {}
         self.partial_samples = {}
+        self.sender_ids = [sender_id for sender_id in args.expected_senders.split(",") if sender_id]
         self.queues = {
             sender_id: queue.Queue(maxsize=args.queue_size)
-            for sender_id in args.expected_senders.split(",")
-            if sender_id
+            for sender_id in self.sender_ids
         }
         self.lock = threading.Lock()
+        self.state_lock = threading.Lock()
         self.events = []
 
     def start(self):
@@ -65,19 +78,23 @@ class LiveReceiver:
     def receive_loop(self):
         print(f"Receiver/trainer listening on {self.args.host}:{self.args.port}", flush=True)
         while not self.stop_event.is_set():
-            packet, _addr = self.sock.recvfrom(self.args.recv_bytes)
+            try:
+                packet, _addr = self.sock.recvfrom(self.args.recv_bytes)
+            except OSError:
+                if self.stop_event.is_set():
+                    break
+                raise
             now = time.perf_counter()
             parsed = self.parse_packet(packet)
             sender_id = parsed["sender_id"]
             self.last_seen[sender_id] = now
 
             if self.outage_active[sender_id]:
-                self.outage_active[sender_id] = False
-                self.record_event(now, sender_id, "outage_end", "control")
+                self.end_outage(sender_id, now)
 
             sample = self.add_chunk(parsed)
             if sample is not None:
-                self.enqueue_sample(sender_id, sample)
+                self.enqueue_sample(sender_id, sample, "live")
 
     def parse_packet(self, packet: bytes):
         header, chunk = packet.split(b"||", 1)
@@ -161,14 +178,16 @@ class LiveReceiver:
             "interarrival_global": entry["interarrival_global"],
         }
 
-    def enqueue_sample(self, sender_id: str, sample) -> None:
+    def enqueue_sample(self, sender_id: str, sample, source: str) -> bool:
         if sender_id not in self.queues:
             self.queues[sender_id] = queue.Queue(maxsize=self.args.queue_size)
         try:
             self.queues[sender_id].put_nowait(sample)
-            self.record_event(time.perf_counter(), sender_id, "sample_received", "live")
+            self.record_event(time.perf_counter(), sender_id, "sample_received", source)
+            return True
         except queue.Full:
-            self.record_event(time.perf_counter(), sender_id, "sample_dropped_queue_full", "live")
+            self.record_event(time.perf_counter(), sender_id, "sample_dropped_queue_full", source)
+            return False
 
     def monitor_outages(self):
         while not self.stop_event.is_set():
@@ -178,9 +197,76 @@ class LiveReceiver:
                     not self.outage_active[sender_id]
                     and now - last_seen > self.args.outage_timeout
                 ):
-                    self.outage_active[sender_id] = True
-                    self.record_event(now, sender_id, "outage_start", "control")
+                    self.start_outage(sender_id, now)
             time.sleep(self.args.monitor_interval)
+
+    def start_outage(self, sender_id: str, timestamp: float) -> None:
+        with self.state_lock:
+            if self.outage_active[sender_id]:
+                return
+            self.outage_active[sender_id] = True
+        self.record_event(timestamp, sender_id, "outage_start", "control")
+        print(f"[receiver_outage_start] sender={sender_id}", flush=True)
+        if self.args.fallback_mode == "none":
+            return
+        stop_event = threading.Event()
+        self.fallback_stops[sender_id] = stop_event
+        thread = threading.Thread(
+            target=self.inject_fallback,
+            args=(sender_id, stop_event),
+            daemon=True,
+        )
+        thread.start()
+
+    def end_outage(self, sender_id: str, timestamp: float) -> None:
+        with self.state_lock:
+            if not self.outage_active[sender_id]:
+                return
+            self.outage_active[sender_id] = False
+            stop_event = self.fallback_stops.pop(sender_id, None)
+        if stop_event is not None:
+            stop_event.set()
+        self.record_event(timestamp, sender_id, "outage_end", "control")
+        print(f"[receiver_outage_end] sender={sender_id}", flush=True)
+
+    def historical_dataset_for_sender(self, sender_id: str):
+        if not self.historical_datasets:
+            return None
+        try:
+            sender_index = self.sender_ids.index(sender_id)
+        except ValueError:
+            sender_index = 0
+        return self.historical_datasets[sender_index % len(self.historical_datasets)]
+
+    def inject_fallback(self, sender_id: str, stop_event: threading.Event) -> None:
+        dataset = self.historical_dataset_for_sender(sender_id)
+        if dataset is None or len(dataset) == 0:
+            self.record_event(time.perf_counter(), sender_id, "fallback_unavailable", "control")
+            print(f"[receiver_fallback_unavailable] sender={sender_id}", flush=True)
+            return
+
+        source = f"fallback_{self.args.fallback_mode}"
+        strategy = "fixed" if self.args.fallback_mode == "fixed" else self.args.fallback_mode
+        index = self.fallback_indices.get(sender_id, 0)
+
+        while not self.stop_event.is_set() and not stop_event.is_set():
+            delay = self.delay_sampler.sample(strategy) * self.args.time_scale
+            if delay > 0 and stop_event.wait(delay):
+                break
+
+            x, y = dataset[index % len(dataset)]
+            index += 1
+            self.fallback_indices[sender_id] = index
+            sample = {
+                "x": x,
+                "y": y,
+                "source": source,
+                "sender_id": sender_id,
+                "received_at": time.perf_counter(),
+                "replay_delay": delay,
+            }
+            if not self.enqueue_sample(sender_id, sample, source):
+                stop_event.wait(max(self.args.monitor_interval, 0.01))
 
     def drain(self, sender_id: str, max_samples: int):
         drained = []
@@ -194,12 +280,24 @@ class LiveReceiver:
 
     def discard_queued(self) -> int:
         discarded = 0
-        for sample_queue in self.queues.values():
+        for sender_id, sample_queue in self.queues.items():
+            preserved = []
             while True:
                 try:
-                    sample_queue.get_nowait()
-                    discarded += 1
+                    sample = sample_queue.get_nowait()
                 except queue.Empty:
+                    break
+                if (
+                    sample.get("source") != "live"
+                    and self.outage_active.get(sender_id, False)
+                ):
+                    preserved.append(sample)
+                else:
+                    discarded += 1
+            for sample in preserved:
+                try:
+                    sample_queue.put_nowait(sample)
+                except queue.Full:
                     break
         return discarded
 
@@ -222,6 +320,8 @@ class LiveReceiver:
 
     def stop(self):
         self.stop_event.set()
+        for stop_event in self.fallback_stops.values():
+            stop_event.set()
         self.sock.close()
 
 
@@ -284,38 +384,63 @@ def compute_capped_class_weights(datasets, max_weight: float) -> torch.Tensor:
     return base
 
 
-def fallback_samples(
-    dataset,
-    count: int,
-    start_index: int,
-    sender_id: str,
-    delay_sampler: DelaySampler,
-    fallback_mode: str,
-    time_scale: float,
+def build_online_datasets(
+    config: SimulationConfig,
+    transform,
+    sender_count: int,
+    fallback_video_count: int,
+    live_reserved_video_count: int,
 ):
-    samples = []
-    if len(dataset) == 0:
-        return samples, start_index, 0.0
-
-    total_delay = 0.0
-    strategy = "fixed" if fallback_mode == "fixed" else fallback_mode
-    for _ in range(count):
-        delay = delay_sampler.sample(strategy) * time_scale
-        if delay > 0:
-            time.sleep(delay)
-        x, y = dataset[start_index % len(dataset)]
-        samples.append(
-            {
-                "x": x,
-                "y": y,
-                "source": f"fallback_{fallback_mode}",
-                "sender_id": sender_id,
-                "received_at": time.perf_counter(),
-            }
+    videos = list_annotated_videos()
+    if fallback_video_count <= 0:
+        raise ValueError("--fallback-video-count must be positive")
+    if len(videos) < live_reserved_video_count + fallback_video_count + config.test_videos:
+        raise RuntimeError(
+            "Not enough annotated videos for disjoint online live/test/fallback ranges: "
+            f"need {live_reserved_video_count + fallback_video_count + config.test_videos}, "
+            f"found {len(videos)}. Lower --live-reserved-video-count, "
+            "--fallback-video-count, or --test-videos."
         )
-        total_delay += delay
-        start_index += 1
-    return samples, start_index, total_delay
+
+    fallback_videos = videos[-fallback_video_count:]
+    test_start = live_reserved_video_count
+    test_end = len(videos) - fallback_video_count
+    test_candidates = videos[test_start:test_end]
+    if len(test_candidates) < config.test_videos:
+        raise RuntimeError(
+            "Not enough non-live, non-fallback videos for the online test split: "
+            f"need {config.test_videos}, found {len(test_candidates)}."
+        )
+
+    fallback_dataset = DETRACDataset(
+        fallback_videos,
+        DETRAC_ANNOT_DIR,
+        transform=transform,
+        max_frames_per_video=config.max_frames_per_video,
+    )
+    test_dataset = DETRACDataset(
+        test_candidates[: config.test_videos],
+        DETRAC_ANNOT_DIR,
+        transform=transform,
+        max_frames_per_video=config.max_frames_per_video,
+    )
+    historical_datasets = [fallback_dataset for _ in range(sender_count)]
+
+    print("Online receiver dataset ranges:", flush=True)
+    print(
+        f"  live folders reserved for senders: first {live_reserved_video_count}",
+        flush=True,
+    )
+    print(
+        f"  fallback folders: last {fallback_video_count} "
+        f"({os.path.basename(fallback_videos[0])}..{os.path.basename(fallback_videos[-1])})",
+        flush=True,
+    )
+    print(
+        f"  test folders: {config.test_videos} after the live-reserved range",
+        flush=True,
+    )
+    return historical_datasets, test_dataset
 
 
 def train_batch(model, optimizer, loss_fn, samples):
@@ -406,7 +531,19 @@ def parse_args():
     parser.add_argument("--max-class-weight", type=float, default=5.0)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--videos-per-agent", type=int, default=1)
-    parser.add_argument("--historical-videos-per-agent", type=int, default=5)
+    parser.add_argument("--historical-videos-per-agent", type=int, default=20)
+    parser.add_argument(
+        "--fallback-video-count",
+        type=int,
+        default=None,
+        help="Number of final sorted UA-DETRAC folders reserved for receiver fallback. Defaults to --historical-videos-per-agent.",
+    )
+    parser.add_argument(
+        "--live-reserved-video-count",
+        type=int,
+        default=60,
+        help="Number of initial sorted UA-DETRAC folders reserved for live senders, used to keep receiver test/fallback folders disjoint.",
+    )
     parser.add_argument("--test-videos", type=int, default=10)
     parser.add_argument("--max-frames-per-video", type=int, default=50)
     parser.add_argument("--time-scale", type=float, default=1.0)
@@ -429,25 +566,36 @@ def main():
         time_scale=args.time_scale,
         seed=args.seed,
     )
-    _live_datasets, historical_datasets, test_dataset = build_datasets(config)
-    class_weights = compute_capped_class_weights(historical_datasets, args.max_class_weight)
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=128)
-    delay_sampler = DelaySampler(config)
-
     transform = transforms.Compose(
         [
             transforms.Resize((config.img_size, config.img_size)),
             transforms.ToTensor(),
         ]
     )
-    receiver = LiveReceiver(args, transform)
+    sender_ids = [sender for sender in args.expected_senders.split(",") if sender]
+    fallback_video_count = (
+        args.fallback_video_count
+        if args.fallback_video_count is not None
+        else args.historical_videos_per_agent
+    )
+    historical_datasets, test_dataset = build_online_datasets(
+        config,
+        transform,
+        sender_count=len(sender_ids),
+        fallback_video_count=fallback_video_count,
+        live_reserved_video_count=args.live_reserved_video_count,
+    )
+    class_weights = compute_capped_class_weights(
+        [historical_datasets[0]], args.max_class_weight
+    )
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=128)
+    delay_sampler = DelaySampler(config)
+    receiver = LiveReceiver(args, transform, historical_datasets, delay_sampler)
     receiver.start()
 
     model = SimpleCNN().to(DEVICE)
     optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
     loss_fn = nn.CrossEntropyLoss(weight=class_weights.to(DEVICE))
-    sender_ids = [sender for sender in args.expected_senders.split(",") if sender]
-    fallback_indices = {sender_id: 0 for sender_id in sender_ids}
     replay_buffer = ClassBalancedReplayBuffer(args.replay_buffer_size)
     metrics = []
 
@@ -473,26 +621,10 @@ def main():
                 time.sleep(args.round_collect_seconds)
 
                 round_samples = []
-                fallback_delay = 0.0
-                for sender_index, sender_id in enumerate(sender_ids):
+                for sender_id in sender_ids:
                     live = receiver.drain(sender_id, args.samples_per_sender_per_round)
                     if live:
                         round_samples.extend(live)
-                        continue
-
-                    if receiver.outage_active[sender_id] and args.fallback_mode != "none":
-                        fallback, next_index, delay = fallback_samples(
-                            historical_datasets[sender_index % len(historical_datasets)],
-                            args.samples_per_sender_per_round,
-                            fallback_indices[sender_id],
-                            sender_id,
-                            delay_sampler,
-                            args.fallback_mode,
-                            args.time_scale,
-                        )
-                        fallback_indices[sender_id] = next_index
-                        fallback_delay += delay
-                        round_samples.extend(fallback)
 
                 random.shuffle(round_samples)
                 replay_buffer.add_many(round_samples)
@@ -518,6 +650,9 @@ def main():
                 queues = receiver.queue_lengths()
                 live_count = sum(1 for sample in round_samples if sample["source"] == "live")
                 fallback_count = len(round_samples) - live_count
+                fallback_delay = sum(
+                    float(sample.get("replay_delay", 0.0)) for sample in round_samples
+                )
                 if not train_samples and not args.allow_empty_rounds:
                     raise RuntimeError(
                         f"Round {round_number} had zero training samples. "
