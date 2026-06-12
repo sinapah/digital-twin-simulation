@@ -617,12 +617,15 @@ def main():
         for round_number in range(1, args.rounds + 1):
             with ResourceSampler() as resources:
                 round_start = time.time()
+                round_start_perf = time.perf_counter()
                 stale_discarded = 0 if args.keep_stale_queue else receiver.discard_queued()
                 time.sleep(args.round_collect_seconds)
 
                 round_samples = []
+                samples_by_sender = {}
                 for sender_id in sender_ids:
                     live = receiver.drain(sender_id, args.samples_per_sender_per_round)
+                    samples_by_sender[sender_id] = live
                     if live:
                         round_samples.extend(live)
 
@@ -653,6 +656,25 @@ def main():
                 fallback_delay = sum(
                     float(sample.get("replay_delay", 0.0)) for sample in round_samples
                 )
+                queue_fill_by_sender = {}
+                queue_fill_complete_by_sender = {}
+                for sender_id, samples in samples_by_sender.items():
+                    if samples:
+                        last_received_at = max(
+                            float(sample.get("received_at", round_start_perf))
+                            for sample in samples
+                        )
+                        queue_fill_by_sender[sender_id] = max(
+                            0.0, last_received_at - round_start_perf
+                        )
+                    else:
+                        queue_fill_by_sender[sender_id] = float("nan")
+                    queue_fill_complete_by_sender[sender_id] = (
+                        len(samples) >= args.samples_per_sender_per_round
+                    )
+                valid_fill_times = [
+                    value for value in queue_fill_by_sender.values() if not np.isnan(value)
+                ]
                 if not train_samples and not args.allow_empty_rounds:
                     raise RuntimeError(
                         f"Round {round_number} had zero training samples. "
@@ -689,6 +711,13 @@ def main():
                 "fallback_samples": fallback_count,
                 "fallback_samples_trained": train_fallback_count,
                 "fallback_delay": fallback_delay,
+                "queue_fill_seconds_avg": (
+                    float(np.mean(valid_fill_times)) if valid_fill_times else float("nan")
+                ),
+                "queue_fill_seconds_max": (
+                    float(np.max(valid_fill_times)) if valid_fill_times else float("nan")
+                ),
+                "queue_fill_complete_senders": sum(queue_fill_complete_by_sender.values()),
                 "compute_time": compute_time,
                 "train_loss_avg": float(np.mean(batch_losses)) if batch_losses else float("nan"),
                 "round_wall_time": elapsed,
@@ -708,6 +737,15 @@ def main():
                 row[f"train_{CLASS_NAMES[cls]}"] = train_label_counts[cls]
                 row[f"received_{CLASS_NAMES[cls]}"] = received_label_counts[cls]
                 row[f"buffer_{CLASS_NAMES[cls]}"] = buffer_label_counts[cls]
+            for sender_id in sender_ids:
+                safe_sender_id = sender_id.replace("-", "_")
+                row[f"received_{safe_sender_id}"] = len(samples_by_sender.get(sender_id, []))
+                row[f"queue_fill_seconds_{safe_sender_id}"] = queue_fill_by_sender.get(
+                    sender_id, float("nan")
+                )
+                row[f"queue_fill_complete_{safe_sender_id}"] = queue_fill_complete_by_sender.get(
+                    sender_id, False
+                )
             metrics.append(row)
             print(
                 f"Round {round_number}: acc={frame_acc*100:.2f}% "
@@ -715,6 +753,9 @@ def main():
                 f"received={len(round_samples)} trained={len(train_samples)} "
                 f"live={live_count} fallback={fallback_count} "
                 f"stale_discarded={stale_discarded} "
+                f"queue_fill_avg={row['queue_fill_seconds_avg']:.2f}s "
+                f"queue_fill_max={row['queue_fill_seconds_max']:.2f}s "
+                f"queue_fill_complete={row['queue_fill_complete_senders']}/{len(sender_ids)} "
                 f"cpu_avg={row['cpu_avg']:.1f}% "
                 f"host_cpu_avg={row['cpu_avg_host_percent']:.1f}%",
                 flush=True,
