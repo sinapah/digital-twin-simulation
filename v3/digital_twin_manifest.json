@@ -1,0 +1,45 @@
+{
+  "description": "Conceptual 24-intersection UA-DETRAC split for the v3 fully simulated digital twin. The first 21 intersections are live sensors assigned to three edge devices; the final 3 intersections are held out for historical fallback. Remaining annotated UA-DETRAC folders are reserved for evaluation.",
+  "edges": ["edge0", "edge1", "edge2"],
+  "intersections": [
+    {"id": "intersection_00", "role": "live", "edge": "edge0", "sequences": ["MVI_20011"]},
+    {"id": "intersection_01", "role": "live", "edge": "edge0", "sequences": ["MVI_20032"]},
+    {"id": "intersection_02", "role": "live", "edge": "edge0", "sequences": ["MVI_20033"]},
+    {"id": "intersection_03", "role": "live", "edge": "edge0", "sequences": ["MVI_20034"]},
+    {"id": "intersection_04", "role": "live", "edge": "edge0", "sequences": ["MVI_20035"]},
+    {"id": "intersection_05", "role": "live", "edge": "edge0", "sequences": ["MVI_20051"]},
+    {"id": "intersection_06", "role": "live", "edge": "edge0", "sequences": ["MVI_20052"]},
+
+    {"id": "intersection_07", "role": "live", "edge": "edge1", "sequences": ["MVI_20061"]},
+    {"id": "intersection_08", "role": "live", "edge": "edge1", "sequences": ["MVI_20062"]},
+    {"id": "intersection_09", "role": "live", "edge": "edge1", "sequences": ["MVI_20063"]},
+    {"id": "intersection_10", "role": "live", "edge": "edge1", "sequences": ["MVI_20064"]},
+    {"id": "intersection_11", "role": "live", "edge": "edge1", "sequences": ["MVI_20065"]},
+    {"id": "intersection_12", "role": "live", "edge": "edge1", "sequences": ["MVI_39761"]},
+    {"id": "intersection_13", "role": "live", "edge": "edge1", "sequences": ["MVI_39771"]},
+
+    {"id": "intersection_14", "role": "live", "edge": "edge2", "sequences": ["MVI_39781"]},
+    {"id": "intersection_15", "role": "live", "edge": "edge2", "sequences": ["MVI_39801"]},
+    {"id": "intersection_16", "role": "live", "edge": "edge2", "sequences": ["MVI_39811"]},
+    {"id": "intersection_17", "role": "live", "edge": "edge2", "sequences": ["MVI_39821"]},
+    {"id": "intersection_18", "role": "live", "edge": "edge2", "sequences": ["MVI_39851"]},
+    {"id": "intersection_19", "role": "live", "edge": "edge2", "sequences": ["MVI_39861"]},
+    {"id": "intersection_20", "role": "live", "edge": "edge2", "sequences": ["MVI_39931"]},
+
+    {"id": "intersection_21", "role": "historical_fallback", "edge": null, "sequences": ["MVI_40141"]},
+    {"id": "intersection_22", "role": "historical_fallback", "edge": null, "sequences": ["MVI_40152"]},
+    {"id": "intersection_23", "role": "historical_fallback", "edge": null, "sequences": ["MVI_40161"]}
+  ],
+  "evaluation_sequences": [
+    "MVI_40162",
+    "MVI_40171",
+    "MVI_40172",
+    "MVI_40191",
+    "MVI_40192",
+    "MVI_40201",
+    "MVI_40204",
+    "MVI_40211",
+    "MVI_40212",
+    "MVI_40241"
+  ]
+}

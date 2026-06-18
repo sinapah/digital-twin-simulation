@@ -2,10 +2,11 @@
 
 V3 extends the V2 federated UA-DETRAC training simulation with camera outages, historical fallback replay, synthetic interarrival delays, resource metrics, and a Makefile for running three sender processes plus one receiver.
 
-There are two related workflows:
+There are three related workflows:
 
 1. **Live receiver-side training**: senders stream labeled vehicle crops to the receiver VM, and training happens on the receiver. If a sender goes silent, the receiver uses local historical samples paced by fixed/KDE/WGAN synthetic delays.
 2. **Offline training simulation**: runs locally from DETRAC files and synthetic delay CSVs. This is useful for fast repeatable comparison of `baseline_live`, `outage_no_fallback`, `outage_replay_fixed`, `outage_replay_kde`, and `outage_replay_wgan` without running UDP senders.
+3. **Fully simulated digital twin**: simulates 24 conceptual UA-DETRAC intersections as sensors, three edge devices with seven live intersections each, three held-out historical fallback intersections, sensor outages, edge-local training, and federated learning between the edge devices.
 
 ## Setup
 
@@ -168,6 +169,67 @@ python3 receiver_training.py \
 ```
 
 If no live or fallback samples reach a training round, `receiver_training.py` now fails instead of writing misleading constant accuracy rows. Use `--allow-empty-rounds` only when debugging receiver startup.
+
+## Run the fully simulated digital twin
+
+The digital twin is a controlled local simulation, not a VM/UDP workflow. It treats senders as simulated sensors/cameras and receivers as edge devices. Three edge devices each receive seven live intersections and federate their models after local training rounds. Three intersections are reserved as historical fallback data.
+
+The split is defined in:
+
+```text
+v3/digital_twin_manifest.json
+```
+
+The design notes are in:
+
+```text
+v3/digital_twin_plan.md
+```
+
+Run all default scenarios:
+
+```bash
+cd v3
+python3 digital_twin_simulation.py
+```
+
+Run a single fast smoke scenario:
+
+```bash
+python3 digital_twin_simulation.py \
+  --scenarios outage_replay_kde \
+  --rounds 1 \
+  --max-frames-per-video 1 \
+  --samples-per-sensor-per-round 1 \
+  --batch-size 4 \
+  --train-batches-per-round 1 \
+  --round-collect-seconds 0 \
+  --time-scale 0 \
+  --outage-start-round 1 \
+  --outage-end-round 1 \
+  --outage-intersections intersection_00
+```
+
+Common options:
+
+- `--scenarios baseline_live,outage_replay_kde`
+- `--outage-intersections intersection_00,intersection_07`
+- `--outage-start-round 20 --outage-end-round 60`
+- `--samples-per-sensor-per-round 16`
+- `--round-collect-seconds 2`
+- `--time-scale 0` for fast validation without delay sleeps
+
+Digital twin outputs are written to:
+
+```text
+v3/outputs/digital_twin/
+```
+
+Each scenario writes:
+
+- `global_metrics_<scenario>.csv`
+- `edge_metrics_<scenario>.csv`
+- `sensor_metrics_<scenario>.csv`
 
 ## Run the offline training simulation
 
