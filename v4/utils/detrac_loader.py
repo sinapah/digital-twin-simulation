@@ -55,8 +55,10 @@ class DETRACLoader:
     
     def get_annotation_path(self, folder: str) -> str:
         """Get full path to annotation file"""
-        xml_file = f"gt_{folder}.xml"
-        return os.path.join(self.annotation_dir, folder, xml_file)
+        # UA-DETRAC annotations are directly in the annotation directory
+        # e.g., ../DETRAC-Train-Annotations-XML/DETRAC-Train-Annotations-XML/MVI_20011.xml
+        xml_file = f"{folder}.xml"
+        return os.path.join(self.annotation_dir, xml_file)
     
     def load_annotations(self, folder: str) -> Dict[int, List[VehicleDetection]]:
         """Load annotations for a video folder"""
@@ -96,9 +98,10 @@ class DETRACLoader:
     
     def load_frame(self, folder: str, frame_num: int) -> Optional[np.ndarray]:
         """Load a specific frame"""
+        # UA-DETRAC uses img00001.jpg format (no underscore)
         img_path = os.path.join(
             self.get_video_path(folder),
-            f"img_{frame_num:05d}.jpg"
+            f"img{frame_num:05d}.jpg"
         )
         
         if not os.path.exists(img_path):

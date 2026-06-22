@@ -15,6 +15,7 @@ from torch.utils.data import DataLoader, Dataset
 import json
 import time
 import os
+import csv
 import psutil
 import sys
 import io
@@ -144,12 +145,18 @@ class EdgeAgent:
     """Edge device that trains locally and participates in federated learning"""
     
     def __init__(self, edge_id: int, intersection_indices: List[int],
-                 aggregator_host: str, aggregator_port: int, sender_port: int):
+                 aggregator_host: str, aggregator_port: int, sender_port: int,
+                 image_dir: str = '../DETRAC-Images/DETRAC-Images',
+                 annotation_dir: str = '../DETRAC-Train-Annotations-XML/DETRAC-Train-Annotations-XML',
+                 max_frames_per_video: int = 50):
         self.edge_id = edge_id
         self.intersection_indices = intersection_indices
         self.aggregator_host = aggregator_host
         self.aggregator_port = aggregator_port
         self.sender_port = sender_port
+        self.image_dir = image_dir
+        self.annotation_dir = annotation_dir
+        self.max_frames_per_video = max_frames_per_video
         
         self.model = SimpleCNN(num_classes=4).to(device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=LEARNING_RATE)
@@ -159,9 +166,56 @@ class EdgeAgent:
         self.data_loader = None
         self.round_count = 0
         self.connected = False
+        self.metrics_log = []
         
         self.flush_print(f"[Edge {edge_id}] Initialized for intersections {intersection_indices}")
         self.flush_print(f"[Edge {edge_id}] Device: {device}")
+        self.flush_print(f"[Edge {edge_id}] Image dir: {image_dir}")
+        self.flush_print(f"[Edge {edge_id}] Annotation dir: {annotation_dir}")
+        
+        self._load_data()
+    
+    def _load_data(self):
+        """Load real UA-DETRAC data from mounted directory"""
+        from utils.detrac_loader import DETRACLoader, DETRACDataset
+        from torchvision import transforms
+        
+        loader = DETRACLoader(self.image_dir, self.annotation_dir)
+        all_folders = loader.get_video_folders()
+        
+        if not all_folders:
+            self.flush_print(f"[Edge {self.edge_id}] WARNING: No UA-DETRAC folders found at {self.image_dir}")
+            self.flush_print(f"[Edge {self.edge_id}] Falling back to dummy data")
+            self._create_dummy_data_loader()
+            return
+        
+        selected_folders = []
+        for idx in self.intersection_indices:
+            if idx < len(all_folders):
+                selected_folders.append(all_folders[idx])
+        
+        self.flush_print(f"[Edge {self.edge_id}] Loading {len(selected_folders)} UA-DETRAC folders: {selected_folders}")
+        
+        transform = transforms.Compose([
+            transforms.ToTensor(),
+        ])
+        
+        self.dataset = DETRACDataset(
+            loader=loader,
+            video_folders=selected_folders,
+            max_frames=self.max_frames_per_video,
+            transform=transform
+        )
+        self.flush_print(f"[Edge {self.edge_id}] Loaded {len(self.dataset)} vehicle crops from UA-DETRAC")
+        
+        if len(self.dataset) == 0:
+            self.flush_print(f"[Edge {self.edge_id}] No crops found in UA-DETRAC folders, falling back to dummy data")
+            self._create_dummy_data_loader()
+            return
+        
+        from torch.utils.data import DataLoader
+        self.data_loader = DataLoader(self.dataset, batch_size=BATCH_SIZE, shuffle=True)
+        self.flush_print(f"[Edge {self.edge_id}] DataLoader created with {len(self.data_loader)} batches")
     
     def connect_to_aggregator(self):
         """Connect to aggregator and register"""
@@ -235,15 +289,19 @@ class EdgeAgent:
     
     def train_local(self) -> Dict:
         """Train on local data for one round"""
-        # Create data loader if not exists (placeholder for now)
         if self.data_loader is None:
-            self.flush_print(f"[Edge {self.edge_id}] Creating dummy data loader")
-            self._create_dummy_data_loader()
+            self.flush_print(f"[Edge {self.edge_id}] No data available for training, returning empty metrics")
+            return {
+                'loss': 0,
+                'accuracy': 0,
+                'cpu_avg': 0,
+                'cpu_peak': 0,
+                'samples_trained': 0
+            }
         
-        self.flush_print(f"[Edge {self.edge_id}] Starting local training")
+        self.flush_print(f"[Edge {self.edge_id}] Starting local training with {len(self.data_loader.dataset)} samples")
         self.model.train()
         
-        # Monitor CPU during training
         cpu_samples = []
         process = psutil.Process()
         
@@ -254,8 +312,7 @@ class EdgeAgent:
         for epoch in range(LOCAL_EPOCHS):
             self.flush_print(f"[Edge {self.edge_id}] Epoch {epoch+1}/{LOCAL_EPOCHS}")
             for batch_idx, (data, target) in enumerate(self.data_loader):
-                # Sample CPU usage
-                cpu_samples.append(process.cpu_percent(interval=0.01))
+                cpu_samples.append(process.cpu_percent(interval=None))
                 
                 data, target = data.to(device), target.to(device)
                 self.optimizer.zero_grad()
@@ -268,22 +325,22 @@ class EdgeAgent:
                 pred = output.argmax(dim=1)
                 correct += pred.eq(target).sum().item()
                 total += target.size(0)
-                
-                if batch_idx % 10 == 0:  # Print every 10 batches
-                    self.flush_print(f"[Edge {self.edge_id}] Batch {batch_idx}, loss: {loss.item():.4f}")
         
-        # Calculate CPU metrics
         cpu_avg = sum(cpu_samples) / len(cpu_samples) if cpu_samples else 0.0
         cpu_peak = max(cpu_samples) if cpu_samples else 0.0
         
-        self.flush_print(f"[Edge {self.edge_id}] Local training complete. Loss: {total_loss/len(self.data_loader):.4f}, Accuracy: {correct/total:.4f}")
+        samples_trained = total
+        avg_loss = total_loss / len(self.data_loader) if len(self.data_loader) > 0 else 0
+        accuracy = correct / total if total > 0 else 0
+        
+        self.flush_print(f"[Edge {self.edge_id}] Local training complete. Loss: {avg_loss:.4f}, Accuracy: {accuracy:.4f}, Samples: {samples_trained}")
         
         return {
-            'loss': total_loss / len(self.data_loader),
-            'accuracy': correct / total,
+            'loss': avg_loss,
+            'accuracy': accuracy,
             'cpu_avg': cpu_avg,
             'cpu_peak': cpu_peak,
-            'samples_trained': total
+            'samples_trained': samples_trained
         }
     
     def _create_dummy_data_loader(self):
@@ -342,6 +399,9 @@ class EdgeAgent:
                 weights = recv_weights(self.sock)
                 self.set_weights(weights)
                 self.flush_print(f"[Edge {self.edge_id}] Received updated weights")
+        except ConnectionResetError:
+            self.flush_print(f"[Edge {self.edge_id}] Aggregator connection closed (round complete)")
+            raise SystemExit(0)
         except Exception as e:
             self.flush_print(f"[Edge {self.edge_id}] Failed to receive weights: {e}")
     
@@ -374,11 +434,39 @@ class EdgeAgent:
         # Print CPU metrics
         self.flush_print(f"[Edge {self.edge_id}] CPU avg: {metrics.get('cpu_avg', 0):.1f}%, peak: {metrics.get('cpu_peak', 0):.1f}%")
         
+        # Log metrics to CSV
+        metrics['round'] = self.round_count
+        metrics['edge_id'] = self.edge_id
+        metrics['timestamp'] = time.time()
+        self.metrics_log.append(metrics)
+        self._flush_metrics_csv(metrics)
+        
         # Wait for updated weights
         self.receive_weights_from_aggregator()
         
         self.round_count += 1
         self.flush_print(f"[Edge {self.edge_id}] Round {self.round_count - 1} complete")
+    
+    def _flush_metrics_csv(self, metrics):
+        """Write metrics to CSV file"""
+        import csv
+        import os
+        
+        output_dir = 'outputs'
+        os.makedirs(output_dir, exist_ok=True)
+        filepath = os.path.join(output_dir, f'edge_{self.edge_id}_metrics.csv')
+        
+        fieldnames = ['round', 'edge_id', 'timestamp', 'loss', 'accuracy', 
+                      'cpu_avg', 'cpu_peak', 'samples_trained']
+        
+        mode = 'w' if self.round_count == 0 else 'a'
+        write_header = self.round_count == 0
+        
+        with open(filepath, mode, newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+            if write_header:
+                writer.writeheader()
+            writer.writerow(metrics)
     
     def main_loop(self):
         """Main federated learning loop"""
@@ -398,9 +486,12 @@ class EdgeAgent:
                     flush_print(f"[Edge {self.edge_id}] Received ROUND_START")
                     self.run_round()
                 
+            except SystemExit as e:
+                self.flush_print(f"[Edge {self.edge_id}] Exiting with code {e.code}")
+                raise
             except Exception as e:
                 print(f"[Edge {self.edge_id}] Loop error: {e}")
-                time.sleep(1)
+                time.sleep(0.1)
 
 
 # =========================================================
@@ -434,7 +525,10 @@ def main():
         intersection_indices=args.intersection_indices,
         aggregator_host=args.aggregator_host,
         aggregator_port=args.aggregator_port,
-        sender_port=args.sender_port
+        sender_port=args.sender_port,
+        image_dir=args.image_dir,
+        annotation_dir=args.annotation_dir,
+        max_frames_per_video=args.max_frames_per_video
     )
     
     edge.main_loop()

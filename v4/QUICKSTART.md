@@ -126,10 +126,18 @@ python3 sender.py --edge-id 2 --intersection-indices 16 17 18 19 20 21 22 23 --t
 - ✅ **1 Aggregator VM** using FedAvg for weight exchange
 - ✅ **TCP communication** for reliable weight transfer
 - ✅ **Multipass VMs** for isolation and reproducibility
-- ✅ **Sender processes** stream UA-DETRAC images to edge VMs
+- ✅ **Real UA-DETRAC data** loaded from mounted directory (24 intersections)
+- ✅ **100 rounds** of federated learning (all images used each round)
 - ✅ **Local training** on each edge before federated aggregation
-- ✅ **Metrics collection** for training monitoring
-- ✅ **100 rounds** of federated learning (all UA-DETRAC images used)
+- ✅ **CSV metrics output** for visualization (loss, accuracy, CPU, samples per round)
+
+## Key Fixes Applied
+
+1. **Binary weight serialization** - Uses `torch.save()` instead of JSON, reducing weight transfer from ~50MB to ~10MB
+2. **Message handling threads** - Aggregator runs dedicated threads per edge to continuously read from sockets
+3. **Size-prefixed protocol** - All messages include 8-byte size prefix for reliable parsing
+4. **CPU monitoring fix** - Uses `interval=None` to avoid 0 readings from rapid sampling
+5. **Graceful shutdown** - Handles connection reset when aggregator completes all rounds
 
 ## How It Works
 

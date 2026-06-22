@@ -181,6 +181,13 @@ class Aggregator:
             
             if self.round_count >= DEFAULT_ROUNDS:
                 flush_print(f"[Aggregator] Completed {DEFAULT_ROUNDS} rounds, shutting down...")
+                # Close all edge connections
+                with self.lock:
+                    for edge in self.edges.values():
+                        try:
+                            edge.sock.close()
+                        except:
+                            pass
                 break
 
             with self.lock:

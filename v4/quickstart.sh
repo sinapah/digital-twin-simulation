@@ -79,6 +79,8 @@ echo "  Edge 2 PID: $EDGE2_PID"
 echo ""
 echo "Press Ctrl+C to stop all processes"
 echo ""
+echo "=== Training Log (timestamps will be added by processes) ==="
+echo ""
 
 # Wait for user to stop
 trap "kill $AGGREGATOR_PID $EDGE0_PID $EDGE1_PID $EDGE2_PID 2>/dev/null; echo ''; echo 'Stopped all processes'; exit 0" INT

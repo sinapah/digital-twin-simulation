@@ -27,36 +27,54 @@ The critical fixes that made this work:
    - Receiver knows exactly how much data to expect
    - Prevents partial reads and improves reliability
 
+4. **CPU Monitoring Fix**:
+   - Changed from `cpu_percent(interval=0.01)` to `cpu_percent(interval=None)`
+   - The interval parameter was causing 0 readings when samples were too close together
+
+5. **Connection Reset Handling**:
+   - Added graceful handling for `ConnectionResetError` when aggregator completes all rounds
+   - Edges now exit cleanly instead of showing cryptic errors
+
 ## Training Details (Per Round)
 
-**Images Processed**:
-- With UA-DETRAC data: Up to 400 frames per edge (8 intersections × 50 frames)
-- With dummy data (testing): Exactly 100 samples per edge
+**UA-DETRAC Data Per Edge**:
+- **8 intersections** assigned per edge (24 total ÷ 3 = 8)
+- **50 frames per video**, each frame yields 1-5 vehicle crops
+- **Typical samples**: ~3,000-4,000 vehicle crops per round per edge
+- **Batch size**: 64 images, ~60 batches per epoch
 
 **Training Configuration**:
 - **Epochs per round**: 3 (LOCAL_EPOCHS)
 - **Batch size**: 64 images
 - **Learning rate**: 1e-3 (Adam optimizer)
-- **Steps per round**: ~6 steps (100 samples ÷ 64 batch size × 3 epochs)
+- **Steps per round**: ~180 steps (3 epochs × ~60 batches)
 
-### Total Training
-- **Total rounds**: 100
-- **Total optimization steps**: 100 rounds × 3 epochs × ~2 steps = ~600 steps
-- **Total images**: 100 rounds × 100 samples = 10,000 samples (dummy data)
-- **With UA-DETRAC**: All images from all 24 intersections will be used across 100 rounds
+### Total Training (100 Rounds)
+- **Total optimization steps**: 100 rounds × 3 epochs × ~60 batches = ~18,000 steps
+- **Total vehicle crops**: 100 rounds × ~3,700 crops × 3 epochs × 3 edges = ~3.3 million crops
+- **Data coverage**: All 24 UA-DETRAC intersections used every round (8 per edge)
 
 **Round Timing**:
-- Local training: 2-8 seconds (depends on data size)
-- Weight transfer: 1-3 seconds (binary format is much faster)
-- Aggregation: <0.1 seconds (negligible)
-- Total round time: 5-15 seconds typically
+- Local training: 5-15 seconds (depends on number of vehicle crops loaded)
+- Weight transfer: 1-3 seconds (binary torch.save format)
+- Aggregation: <0.1 seconds
+- Total round time: 10-20 seconds
+- **Total training time**: ~25-35 minutes for 100 rounds
 
-## Resource Monitoring
+## Resource & Metrics Output
 
-CPU usage is monitored during training:
-- Reported as `cpu_avg` and `cpu_peak` per edge per round
-- Values represent % of a single CPU core (can exceed 100%)
-- Typical values observed: 0-90% during training
+### CSV Metrics Logging (NEW)
+Per-round metrics are saved to CSV files for visualization and analysis:
+- **Output directory**: `v4/outputs/`
+- **File**: `edge_{edge_id}_metrics.csv` (one per edge)
+- **Columns**: `round`, `edge_id`, `timestamp`, `loss`, `accuracy`, `cpu_avg`, `cpu_peak`, `samples_trained`
+- **Total rows**: 100 rows per edge (one per round), 300 rows total
+
+### CPU Monitoring
+CPU usage is sampled every 0.01s during training batches:
+- `cpu_avg`: Mean CPU percent during the round
+- `cpu_peak`: Maximum CPU percent during the round
+- Values are % of a single core (can exceed 100% on multicore)
 
 ## Files Created
 
@@ -151,12 +169,12 @@ When running correctly, you'll see output like:
 [Aggregator] Starting round 0
 [Edge 0] Received ROUND_START
 [Edge 0] Starting round 0
-[Edge 0] Creating dummy data loader
+[Edge 0] Loading 8 UA-DETRAC folders: [folder_01, folder_02, ...]
+[Edge 0] Loaded 156 vehicle crops from UA-DETRAC
 [Edge 0] Starting local training
 [Edge 0] Epoch 1/3
-[Edge 0] Batch 0, loss: 1.38xx
-[Edge 0] Local training complete. Loss: 4.xxx, Accuracy: 0.xxx
-[Edge 0] CPU avg: x.x%, peak: x.x%
+[Edge 0] Local training complete. Loss: 1.38, Accuracy: 0.42, Samples: 156
+[Edge 0] CPU avg: 45.2%, peak: 92.1%
 [Edge 0] Sent weights to aggregator
 [Aggregator] Received WEIGHTS_UPLOAD from edge 0
 [Aggregator] Aggregating weights...

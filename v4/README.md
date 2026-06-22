@@ -12,15 +12,29 @@ This directory contains the V4 implementation of a federated learning system usi
 
 ## Quick Start (Local Testing)
 
+Use `quickstart.sh` for testing everything on your local machine (runs aggregator + all 3 edges as local processes):
+
 ```bash
 cd v4
 ./setup.sh
 ./quickstart.sh
 ```
 
-This starts all components on your local machine for testing.
+This starts all components on your local machine. Edge agents load UA-DETRAC data from the mounted directory (`../DETRAC-Images/`).
 
 ## Production (Multipass VMs)
+
+Use `run.sh` for deploying to individual VMs. On each VM, run the appropriate command:
+
+```bash
+# On aggregator VM
+./run.sh aggregator
+
+# On edge VMs
+./run.sh edge0
+./run.sh edge1
+./run.sh edge2
+```
 
 ### 1. Launch 4 VMs
 

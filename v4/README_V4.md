@@ -81,7 +81,7 @@ multipass launch --name edge-vm-1 --cpus 2 --memory 4G --disk 20G
 multipass launch --name edge-vm-2 --cpus 2 --memory 4G --disk 20G
 
 # Create aggregator VM
-multipass launch --name aggregator-vm --cpus 2 --memory 4G --disk 20G
+multipass launch --name aggregator-vm --cpus 4 --memory 8G --disk 20G
 ```
 
 ### Get VM IP Addresses
@@ -400,44 +400,44 @@ multipass exec aggregator-vm -- sudo ufw status
 
 ### Round Structure
 Each federated learning round consists of:
-1. **Local Training**: Each edge trains on its assigned data
+1. **Local Training**: Each edge trains on its assigned 8 intersections from UA-DETRAC
 2. **Weight Exchange**: Edges send weights to aggregator → Aggregator performs FedAvg → Aggregator sends updated weights to edges
-3. **Metrics Collection**: Performance and resource metrics are reported
+3. **Metrics Collection**: Performance and resource metrics are saved to CSV
 
-### Images Per Round
-Each edge processes:
-- **Per intersection**: Up to 50 frames per video (configurable via `--max-frames-per-video`)
-- **Per edge**: 8 intersections × 50 frames = 400 frames maximum
+### UA-DETRAC Data Per Round
+Each edge loads vehicle crops directly from the mounted UA-DETRAC directory:
+- **Per intersection**: Up to 50 frames per video (`--max-frames-per-video 50`)
+- **Per edge**: 8 intersections assigned to each VM (24 total ÷ 3 = 8)
+- **Vehicle crops**: Each frame yields 1-5 vehicle crops (car, van, bus, others)
 - **Batch size**: 64 images per batch
-- **Actual processed**: 
-  - With UA-DETRAC: Up to 400 frames × 8 intersections = 3,200 frames per edge per round
-  - With dummy data (testing): Exactly 100 samples per round
+- **Total per edge per round**: ~3,000-4,000 vehicle crops (varies by intersection content)
 
-With the current configuration:
-- Each edge completes ~2 weight update steps per epoch (100 samples ÷ 64 batch size)
-- Total training steps per round: 3 epochs × 2 steps = 6 steps
+Example breakdown by UA-DETRAC folders assigned:
+- **Edge 0**: Folders 0-7 (first 8 sorted MVI folders) - ~3,700 crops
+- **Edge 1**: Folders 8-15 (next 8 sorted MVI folders) - ~3,700 crops  
+- **Edge 2**: Folders 16-23 (last 8 sorted MVI folders) - ~3,700 crops
+
+### Total Training Rounds
+- **DEFAULT_ROUNDS**: 100 rounds
+- **Total optimization steps**: 100 rounds × 3 epochs × ~60 batches = ~18,000 steps per edge
+- **Total vehicle crops**: 100 rounds × ~3,700 crops × 3 epochs × 3 edges = ~3.3 million vehicle crops
+- **Data coverage**: All 24 UA-DETRAC intersections (8 per edge) are used every round
+- **Images per round per edge**: ~3,000-4,000 vehicle crops from real UA-DETRAC data
 
 ### Round Duration
 A typical round takes approximately:
-- **Local Training**: `LOCAL_EPOCHS` epochs over the dataset
-- **Weight Transfer**: Time to serialize/transfer model weights (~5-50MB depending on model size)
-- **Aggregation**: Time for FedAvg computation (negligible for small models)
+- **Local Training**: 2-10 seconds (depends on number of vehicle crops loaded)
+- **Weight Transfer**: 1-3 seconds (binary format using `torch.save`)
+- **Aggregation**: <0.1 seconds (FedAvg is a simple mean)
 - **Network Latency**: VM-to-VM communication time
+- **Total**: 5-15 seconds on local machine, 10-30 seconds across network VMs
 
-With the current configuration (`LOCAL_EPOCHS=3`, `BATCH_SIZE=64`, dummy dataset of 100 samples):
-- Each edge completes ~2 weight update steps per epoch (100 samples ÷ 64 batch size)
-- Total training steps per round: 3 epochs × 2 steps = 6 steps
-- Typical round time: 5-15 seconds on local machine, longer over network
+With 100 rounds at ~10 seconds each, total training time: **~15-20 minutes**.
 
 ### Epochs & Batching
 - **LOCAL_EPOCHS**: 3 (number of times edge trains on its local data per round)
 - **BATCH_SIZE**: 64 (images processed together during training)
 - **Learning Rate**: 1e-3 (Adam optimizer)
-
-### Total Training Rounds
-- **DEFAULT_ROUNDS**: 100 (configurable in aggregator.py)
-- **Total optimization steps**: 100 rounds × 3 epochs × ~2 steps = ~600 steps
-- **Total images processed**: 100 rounds × 100 samples = 10,000 samples (with dummy data)
 
 ### Queueing Behavior
 The system implements flow control at multiple levels:
@@ -454,6 +454,13 @@ CPU usage is monitored during local training:
 - Samples taken every 0.01 seconds during training batches
 - Reports `cpu_avg` and `cpu_peak` per round per edge
 - Values are percentages of a single CPU core (can exceed 100% on multi-core systems)
+
+### CSV Metrics Output
+Per-round metrics are saved to CSV files for visualization:
+- **File**: `v4/outputs/edge_{edge_id}_metrics.csv`
+- **Columns**: `round`, `edge_id`, `timestamp`, `loss`, `accuracy`, `cpu_avg`, `cpu_peak`, `samples_trained`
+- **One row per round**: 100 rows total per edge, 300 rows across all 3 edges
+- **Visualization ready**: Can be plotted with any CSV tool or Python pandas/matplotlib
 
 ## Next Steps
 
