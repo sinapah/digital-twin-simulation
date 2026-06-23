@@ -8,14 +8,22 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import os
 import glob
+import sys
 
 
-def load_edge_metrics(outputs_dir='../outputs'):
+def load_edge_metrics(outputs_dir='../outputs/kde'):
     edge_data = {}
     pattern = os.path.join(outputs_dir, 'edge_*_metrics.csv')
     files = glob.glob(pattern)
 
     if not files:
+        # Try listing available subdirectories
+        parent = os.path.dirname(outputs_dir)
+        if os.path.isdir(parent):
+            subs = [d for d in os.listdir(parent)
+                    if os.path.isdir(os.path.join(parent, d))]
+            if subs:
+                print(f"No data in '{outputs_dir}'. Available runs: {subs}")
         raise FileNotFoundError(f"No metrics files found in {outputs_dir}")
 
     for file_path in files:
@@ -144,8 +152,14 @@ def plot_samples_per_round(edge_data, save_path='samples_per_round.png'):
 
 
 def main():
-    print("Loading edge metrics...")
-    edge_data = load_edge_metrics()
+    import argparse
+    parser = argparse.ArgumentParser(description='Plot simulation results')
+    parser.add_argument('--dir', type=str, default='../outputs/kde',
+                        help='Path to metrics CSV directory (outputs/<model>)')
+    args = parser.parse_args()
+
+    print(f"Loading edge metrics from {args.dir}...")
+    edge_data = load_edge_metrics(args.dir)
 
     if not edge_data:
         print("No edge data found!")
@@ -162,9 +176,14 @@ def main():
     viz_dir = os.path.join(os.path.dirname(__file__))
     os.makedirs(viz_dir, exist_ok=True)
 
-    plot_cpu_with_outages(edge_data, save_path=os.path.join(viz_dir, 'cpu_usage_with_outages.png'))
-    plot_training_metrics(edge_data, save_path=os.path.join(viz_dir, 'training_metrics.png'))
-    plot_samples_per_round(edge_data, save_path=os.path.join(viz_dir, 'samples_per_round.png'))
+    run_name = os.path.basename(os.path.normpath(args.dir))
+
+    plot_cpu_with_outages(edge_data,
+        save_path=os.path.join(viz_dir, f'cpu_usage_{run_name}.png'))
+    plot_training_metrics(edge_data,
+        save_path=os.path.join(viz_dir, f'training_metrics_{run_name}.png'))
+    plot_samples_per_round(edge_data,
+        save_path=os.path.join(viz_dir, f'samples_per_round_{run_name}.png'))
 
     print("\nVisualization complete!")
 

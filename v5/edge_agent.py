@@ -43,10 +43,11 @@ class ImageDataset(Dataset):
 
 class EdgeAgent:
     def __init__(self, edge_id: int, aggregator_host: str = '127.0.0.1',
-                 aggregator_port: int = AGGREGATOR_PORT):
+                 aggregator_port: int = AGGREGATOR_PORT, output_dir: str = 'outputs'):
         self.edge_id = edge_id
         self.aggregator_host = aggregator_host
         self.aggregator_port = aggregator_port
+        self.output_dir = output_dir
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.model = SimpleCNN(num_classes=4).to(self.device)
@@ -168,9 +169,8 @@ class EdgeAgent:
         return metrics
 
     def _flush_metrics_csv(self, metrics):
-        output_dir = 'outputs'
-        os.makedirs(output_dir, exist_ok=True)
-        filepath = os.path.join(output_dir, f'edge_{self.edge_id}_metrics.csv')
+        os.makedirs(self.output_dir, exist_ok=True)
+        filepath = os.path.join(self.output_dir, f'edge_{self.edge_id}_metrics.csv')
 
         fieldnames = ['round', 'edge_id', 'timestamp', 'loss', 'accuracy',
                       'cpu_avg', 'cpu_peak', 'samples_trained', 'is_outage']

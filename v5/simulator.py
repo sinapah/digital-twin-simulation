@@ -29,6 +29,7 @@ class Simulator:
         self.aggregator = Aggregator(port=AGGREGATOR_PORT, num_rounds=num_rounds)
         self.edges = []
         self.outage_periods = []
+        self.output_dir = f'outputs/{delay_model}'
 
         flush_print(f"\n{'='*60}")
         flush_print(f"Digital Twin Federated Learning Simulator")
@@ -51,7 +52,8 @@ class Simulator:
         self.aggregator.shutdown()
 
     def _run_edge(self, edge_id: int):
-        agent = EdgeAgent(edge_id=edge_id, aggregator_port=AGGREGATOR_PORT)
+        agent = EdgeAgent(edge_id=edge_id, aggregator_port=AGGREGATOR_PORT,
+                          output_dir=self.output_dir)
         agent.connect_to_aggregator()
         self.edges.append(agent)
 
