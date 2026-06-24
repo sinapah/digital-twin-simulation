@@ -1,0 +1,45 @@
+CameraSimulator: WGAN delay model
+  Edge 0 videos: ['MVI_20011', 'MVI_20032', 'MVI_20033', 'MVI_20034', 'MVI_20035', 'MVI_20051', 'MVI_20052']
+  Edge 0 historical: MVI_40141
+  Edge 1 videos: ['MVI_20061', 'MVI_20062', 'MVI_20063', 'MVI_20064', 'MVI_20065', 'MVI_39761', 'MVI_39771']
+  Edge 1 historical: MVI_40152
+  Edge 2 videos: ['MVI_39781', 'MVI_39801', 'MVI_39811', 'MVI_39821', 'MVI_39851', 'MVI_39861', 'MVI_39931']
+  Edge 2 historical: MVI_40161
+[Aggregator] Initialized on 127.0.0.1:5000
+
+============================================================
+Digital Twin Federated Learning Simulator
+============================================================
+Delay model: WGAN
+Rounds: 100
+Edges: 3
+Videos per edge: 7
+============================================================
+
+  Edge 0 outage: rounds 5-15 (10 rounds)
+  Edge 1 outage: rounds 31-41 (10 rounds)
+  Edge 2 outage: rounds 58-67 (9 rounds)
+[Aggregator] Listening on 127.0.0.1:5000
+[Edge 1] Initialized on cpu
+[Edge 0] Initialized on cpu
+[Edge 0] Connecting to aggregator at 127.0.0.1:5000
+[Edge 2] Initialized on cpu
+[Edge 1] Connecting to aggregator at 127.0.0.1:5000
+[Aggregator] Edge 0 connected from ('127.0.0.1', 45600)
+[Edge 2] Connecting to aggregator at 127.0.0.1:5000
+[Edge 0] Connected to aggregator
+[Aggregator] Edge 1 connected from ('127.0.0.1', 45608)
+[Aggregator] Edge 2 connected from ('127.0.0.1', 45616)
+[Edge 1] Connected to aggregator
+[Aggregator] All 3 edges connected
+[Simulator] Aggregator started, edges connected
+[Edge 2] Connected to aggregator
+
+[Aggregator] === Round 0 ===
+
+[Simulator] All edges connected. Starting training...
+
+
+[Simulator] ==================================================
+[Simulator] ROUND 0/99
+[Simulator] ==================================================

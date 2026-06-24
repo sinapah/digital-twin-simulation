@@ -7,7 +7,7 @@ import json
 import time
 import os
 import csv
-import psutil
+import threading
 import sys
 import io
 from typing import Dict, List, Tuple, Optional
@@ -57,8 +57,6 @@ class EdgeAgent:
         self.round_count = 0
         self.sock = None
         self.metrics_log = []
-        self.process = psutil.Process()
-        self.process.cpu_percent(interval=None)
 
         flush_print(f"[Edge {edge_id}] Initialized on {self.device}")
 
@@ -93,13 +91,24 @@ class EdgeAgent:
 
         for epoch in range(LOCAL_EPOCHS):
             for batch_idx, (data, target) in enumerate(loader):
-                cpu_samples.append(self.process.cpu_percent(interval=None))
+                wall_start = time.perf_counter()
+                cpu_start = time.thread_time()
+
                 data, target = data.to(self.device), target.to(self.device)
                 self.optimizer.zero_grad()
                 output = self.model(data)
                 loss = self.criterion(output, target)
                 loss.backward()
                 self.optimizer.step()
+
+                cpu_end = time.thread_time()
+                wall_end = time.perf_counter()
+
+                wall_delta = wall_end - wall_start
+                cpu_delta = cpu_end - cpu_start
+                cpu_pct = (cpu_delta / wall_delta * 100) if wall_delta > 0 else 0.0
+                cpu_samples.append(cpu_pct)
+
                 total_loss += loss.item()
                 pred = output.argmax(dim=1)
                 correct += pred.eq(target).sum().item()
