@@ -101,11 +101,13 @@ class CameraSimulator:
         return random.choice(self.delays)
 
     def get_data_for_edge(self, edge_id: int, round_num: int,
-                          outage_periods: List[Tuple[int, int]]) -> List:
-        is_outage = False
-        if edge_id < len(outage_periods):
-            start, end = outage_periods[edge_id]
-            is_outage = start <= round_num <= end
+                          outage_periods: List[Tuple[int, int]],
+                          is_outage: Optional[bool] = None) -> Tuple[List, bool]:
+        if is_outage is None:
+            is_outage = False
+            if edge_id < len(outage_periods):
+                start, end = outage_periods[edge_id]
+                is_outage = start <= round_num <= end
 
         if is_outage:
             folders = [self.historical_folders[edge_id]]

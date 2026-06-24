@@ -57,9 +57,25 @@ class Aggregator:
 
         flush_print(f"[Aggregator] All {NUM_EDGES} edges connected")
 
+    def _send_round_start(self, edge_id, round_num, is_outage):
+        conn = self.edge_connections[edge_id]
+        try:
+            send_msg(conn, {'type': 'ROUND_START', 'round': round_num, 'is_outage': is_outage})
+        except Exception as e:
+            flush_print(f"[Aggregator] Error sending ROUND_START to Edge {edge_id}: {e}")
+
+    def _recv_round_complete(self, edge_id):
+        conn = self.edge_connections[edge_id]
+        try:
+            data = recv_msg(conn)
+            if data and data.get('type') == 'ROUND_COMPLETE':
+                return data
+        except Exception as e:
+            flush_print(f"[Aggregator] Error receiving ROUND_COMPLETE from Edge {edge_id}: {e}")
+        return None
+
     def _handle_edge_round(self, edge_id: int):
         conn = self.edge_connections[edge_id]
-
         try:
             data = recv_msg(conn)
             if data and data.get('type') == 'WEIGHTS_UPLOAD':
@@ -85,20 +101,32 @@ class Aggregator:
         except Exception as e:
             flush_print(f"[Aggregator] Error sending to Edge {edge_id}: {e}")
 
-    def run_round(self, round_num: int):
+    def run_round(self, round_num: int, outage_flags=None):
         self.current_round = round_num
         self.edge_weights = {}
         self.edge_status = {}
 
         flush_print(f"\n[Aggregator] === Round {round_num} ===")
 
-        threads = []
+        if outage_flags is None:
+            outage_flags = [False] * NUM_EDGES
+
+        start_threads = []
+        for edge_id in range(NUM_EDGES):
+            t = threading.Thread(target=self._send_round_start,
+                                 args=(edge_id, round_num, outage_flags[edge_id]))
+            start_threads.append(t)
+            t.start()
+        for t in start_threads:
+            t.join(timeout=30)
+
+        recv_threads = []
         for edge_id in range(NUM_EDGES):
             t = threading.Thread(target=self._handle_edge_round, args=(edge_id,))
-            threads.append(t)
+            recv_threads.append(t)
             t.start()
 
-        for t in threads:
+        for t in recv_threads:
             t.join(timeout=120)
 
         if len(self.edge_weights) < NUM_EDGES:
@@ -106,7 +134,7 @@ class Aggregator:
                         f"{len(self.edge_weights)}/{NUM_EDGES} edges")
             missing = set(range(NUM_EDGES)) - set(self.edge_weights.keys())
             flush_print(f"[Aggregator] Missing edges: {missing}")
-            return
+            return self.edge_status
 
         weights_list = [self.edge_weights[i] for i in range(NUM_EDGES)]
         aggregated = fedavg(weights_list)
@@ -124,6 +152,17 @@ class Aggregator:
 
         for t in send_threads:
             t.join(timeout=60)
+
+        complete_threads = []
+        for edge_id in range(NUM_EDGES):
+            t = threading.Thread(target=self._recv_round_complete, args=(edge_id,))
+            complete_threads.append(t)
+            t.start()
+
+        for t in complete_threads:
+            t.join(timeout=30)
+
+        return self.edge_status
 
     def shutdown(self):
         self.running = False
