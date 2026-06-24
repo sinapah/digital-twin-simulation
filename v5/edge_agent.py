@@ -199,22 +199,59 @@ def main():
     parser.add_argument('--edge-id', type=int, required=True)
     parser.add_argument('--aggregator-host', type=str, default='127.0.0.1')
     parser.add_argument('--aggregator-port', type=int, default=AGGREGATOR_PORT)
+    parser.add_argument('--delay-model', type=str, default='kde', choices=['kde', 'wgan'])
+    parser.add_argument('--max-frames', type=int, default=50)
+    parser.add_argument('--output-dir', type=str, default='outputs')
+    parser.add_argument('--rounds', type=int, default=100)
     args = parser.parse_args()
+
+    from camera_simulator import CameraSimulator
 
     agent = EdgeAgent(
         edge_id=args.edge_id,
         aggregator_host=args.aggregator_host,
-        aggregator_port=args.aggregator_port
+        aggregator_port=args.aggregator_port,
+        output_dir=args.output_dir,
     )
     agent.connect_to_aggregator()
 
-    flush_print(f"[Edge {args.edge_id}] Ready. Waiting for simulator to provide data...")
+    cam = CameraSimulator(delay_model=args.delay_model,
+                          max_frames_per_video=args.max_frames)
 
-    try:
-        while True:
-            time.sleep(0.1)
-    except KeyboardInterrupt:
-        agent.shutdown()
+    flush_print(f"[Edge {args.edge_id}] Waiting for ROUND_START from aggregator...")
+
+    while True:
+        try:
+            data = recv_msg(agent.sock)
+        except (ConnectionResetError, socket.timeout, OSError):
+            flush_print(f"[Edge {args.edge_id}] Aggregator disconnected")
+            break
+        if data is None:
+            flush_print(f"[Edge {args.edge_id}] Aggregator closed connection")
+            break
+
+        msg_type = data.get('type')
+
+        if msg_type == 'ROUND_START':
+            round_num = data['round']
+            is_outage = data.get('is_outage', False)
+            flush_print(f"\n[Edge {args.edge_id}] Round {round_num} [{('OUTAGE' if is_outage else 'NORMAL')}] via subprocess")
+
+            samples, _ = cam.get_data_for_edge(
+                args.edge_id, round_num, [],
+                is_outage=is_outage
+            )
+
+            metrics = agent.run_round(samples, is_outage)
+
+            send_msg(agent.sock, {'type': 'ROUND_COMPLETE'})
+            flush_print(f"[Edge {args.edge_id}] Round {round_num} complete, sent ROUND_COMPLETE")
+
+        elif msg_type == 'SHUTDOWN':
+            flush_print(f"[Edge {args.edge_id}] Received shutdown signal")
+            break
+
+    agent.shutdown()
 
 
 if __name__ == '__main__':
