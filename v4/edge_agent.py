@@ -22,8 +22,7 @@ def flush_print(*args, **kwargs):
 
 def send_msg(sock: socket.socket, msg_dict: dict):
     data = json.dumps(msg_dict).encode()
-    size_prefix = len(data).to_bytes(8, 'big')
-    sock.sendall(size_prefix + data)
+    sock.sendall(len(data).to_bytes(8, 'big') + data)
 
 
 def recv_msg(sock: socket.socket) -> Optional[dict]:
@@ -108,15 +107,21 @@ class UDPCropReceiver:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind(('0.0.0.0', port))
-        self.sock.settimeout(1.0)
+        self.sock.settimeout(5.0)
         self.buffer = []
         self.arrivals = []
         self.complete = False
         self.last_ts = None
         self.lock = threading.Lock()
 
+    def reset(self):
+        with self.lock:
+            self.buffer = []
+            self.arrivals = []
+            self.complete = False
+            self.last_ts = None
+
     def receive_all(self):
-        flush_print(f"[UDPReceiver] Listening on port {self.port}")
         while not self.complete:
             try:
                 data, addr = self.sock.recvfrom(65536)
@@ -127,13 +132,11 @@ class UDPCropReceiver:
             meta = json.loads(data[4:4 + meta_len].decode())
 
             if meta.get('t') == 'END':
-                total = meta.get('tc', 0)
-                flush_print(f"[UDPReceiver] Stream complete: {total} crops expected")
                 self.complete = True
                 break
 
             crop_bytes = data[4 + meta_len:]
-            crop_np = torch.frombuffer(crop_bytes, dtype=torch.uint8).clone().reshape(3, IMG_SIZE, IMG_SIZE).float() / 255.0
+            crop_np = torch.frombuffer(bytearray(crop_bytes), dtype=torch.uint8).reshape(3, IMG_SIZE, IMG_SIZE).float() / 255.0
             label = torch.tensor(meta['l'], dtype=torch.long)
 
             now = time.time()
@@ -150,8 +153,7 @@ class UDPCropReceiver:
                     'arrival_timestamp': now,
                     'interarrival_delay': delay
                 })
-
-        self.sock.close()
+        self.complete = True
 
     def write_arrival_log(self, edge_id: int):
         output_dir = 'outputs'
@@ -159,6 +161,8 @@ class UDPCropReceiver:
         path = os.path.join(output_dir, f'edge_{edge_id}_arrivals.csv')
         with self.lock:
             rows = list(self.arrivals)
+        if not rows:
+            return
         with open(path, 'w', newline='') as f:
             w = csv.DictWriter(f, fieldnames=['seq_num', 'folder', 'frame_num',
                                               'crop_index', 'arrival_timestamp',
@@ -175,6 +179,7 @@ class UDPCropReceiver:
 class EdgeAgent:
     def __init__(self, edge_id: int, intersection_indices: List[int],
                  aggregator_host: str, aggregator_port: int, sender_port: int,
+                 sender_host: str = '127.0.0.1',
                  image_dir: str = DEFAULT_IMAGE_DIR,
                  annotation_dir: str = DEFAULT_ANNOTATION_DIR,
                  max_frames_per_video: int = 50):
@@ -183,6 +188,8 @@ class EdgeAgent:
         self.aggregator_host = aggregator_host
         self.aggregator_port = aggregator_port
         self.sender_port = sender_port
+        self.sender_host = sender_host
+        self.sender_control_port = sender_port + 1
         self.image_dir = image_dir
         self.annotation_dir = annotation_dir
         self.max_frames_per_video = max_frames_per_video
@@ -196,81 +203,67 @@ class EdgeAgent:
         self.connected = False
         self.metrics_log = []
         self.udp_receiver = UDPCropReceiver(sender_port)
+        self.sender_conn = None
 
         flush_print(f"[Edge {edge_id}] Initialized for intersections {intersection_indices}")
         flush_print(f"[Edge {edge_id}] Device: {device}")
 
-    def _load_data_from_udp(self):
-        flush_print(f"[Edge {self.edge_id}] Waiting for UDP crop stream on port {self.sender_port}...")
+    def _connect_to_sender(self):
+        self.sender_conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sender_conn.settimeout(30.0)
+        self.sender_conn.connect((self.sender_host, self.sender_control_port))
+        flush_print(f"[Edge {self.edge_id}] Connected to sender control at {self.sender_host}:{self.sender_control_port}")
+
+    def _request_and_train(self, round_num: int):
+        flush_print(f"[Edge {self.edge_id}] Requesting data for round {round_num} from sender")
+        self.udp_receiver.reset()
+        send_msg(self.sender_conn, {
+            'type': 'REQUEST_DATA', 'round': round_num,
+            'udp_port': self.sender_port
+        })
+        ack = recv_msg(self.sender_conn)
+        if ack:
+            flush_print(f"[Edge {self.edge_id}] Sender ack: {ack.get('total_crops', 0)} crops for round {round_num}")
+
         self.udp_receiver.receive_all()
-
-        if self.udp_receiver.get_buffer_size() < 10:
-            flush_print(f"[Edge {self.edge_id}] Too few crops via UDP ({self.udp_receiver.get_buffer_size()}), falling back to filesystem")
-            self.udp_receiver.write_arrival_log(self.edge_id)
-            self._load_data_from_filesystem()
-            return
-
-        flush_print(f"[Edge {self.edge_id}] Received {self.udp_receiver.get_buffer_size()} crops via UDP")
+        count = self.udp_receiver.get_buffer_size()
+        flush_print(f"[Edge {self.edge_id}] Received {count} crops via UDP")
 
         with self.udp_receiver.lock:
-            images = torch.stack([item[0] for item in self.udp_receiver.buffer])
-            labels = torch.stack([item[1] for item in self.udp_receiver.buffer])
+            if count > 0:
+                images = torch.stack([item[0] for item in self.udp_receiver.buffer])
+                labels = torch.stack([item[1] for item in self.udp_receiver.buffer])
+                dataset = TensorDataset(images, labels)
+                self.data_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 
-        dataset = TensorDataset(images, labels)
-        self.data_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
-        flush_print(f"[Edge {self.edge_id}] DataLoader created with {len(self.data_loader)} batches")
+                class_counts = torch.bincount(labels, minlength=4).float()
+                present = class_counts > 0
+                class_weights = torch.ones(4)
+                class_weights[present] = 1.0 / class_counts[present]
+                class_weights[present] = class_weights[present] / class_weights[present].sum() * present.sum().float()
+                self.criterion = nn.CrossEntropyLoss(weight=class_weights.to(device))
+                flush_print(f"[Edge {self.edge_id}] Class dist: " +
+                            " ".join(f"{c}:{int(n)}" for c, n in
+                                     zip(['car','van','bus','other'], class_counts.tolist())) +
+                            " | weights: " +
+                            " ".join(f"{c}:{w:.2f}" for c, w in
+                                     zip(['car','van','bus','other'], class_weights.tolist())))
+                flush_print(f"[Edge {self.edge_id}] DataLoader: {len(self.data_loader)} batches")
+            else:
+                self._create_dummy_data_loader()
+                flush_print(f"[Edge {self.edge_id}] No UDP data, using dummy")
 
         self.udp_receiver.write_arrival_log(self.edge_id)
 
-    def _load_data_from_filesystem(self):
-        flush_print(f"[Edge {self.edge_id}] Loading data from filesystem")
-        from utils.detrac_loader import DETRACLoader, DETRACDataset
-        from torchvision import transforms
-
-        loader = DETRACLoader(self.image_dir, self.annotation_dir)
-        all_folders = loader.get_video_folders()
-
-        annotated = [
-            f for f in all_folders
-            if os.path.exists(os.path.join(self.annotation_dir, f"{f}.xml"))
-        ]
-
-        selected_folders = []
-        for idx in self.intersection_indices:
-            if idx < len(annotated):
-                selected_folders.append(annotated[idx])
-
-        if not selected_folders:
-            flush_print(f"[Edge {self.edge_id}] No annotated folders for indices {self.intersection_indices}, using dummy data")
-            self._create_dummy_data_loader()
-            return
-
-        flush_print(f"[Edge {self.edge_id}] Loading {len(selected_folders)} annotated folders: {selected_folders}")
-
-        transform = transforms.Compose([transforms.ToTensor()])
-        dataset = DETRACDataset(loader, selected_folders, max_frames=self.max_frames_per_video, transform=transform)
-
-        if len(dataset) == 0:
-            flush_print(f"[Edge {self.edge_id}] No crops in annotated folders, using dummy data")
-            self._create_dummy_data_loader()
-            return
-
-        images = torch.stack([dataset[i][0] for i in range(len(dataset))])
-        labels = torch.tensor([dataset[i][1] for i in range(len(dataset))])
-        self.data_loader = DataLoader(TensorDataset(images, labels), batch_size=BATCH_SIZE, shuffle=True)
-        flush_print(f"[Edge {self.edge_id}] Loaded {len(dataset)} crops from filesystem")
-
     def connect_to_aggregator(self):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.settimeout(60.0)
+        self.sock.settimeout(300.0)
         try:
             flush_print(f"[Edge {self.edge_id}] Connecting to aggregator at {self.aggregator_host}:{self.aggregator_port}")
             self.sock.connect((self.aggregator_host, self.aggregator_port))
-            msg = json.dumps({'type': 'CONNECT', 'edge_id': self.edge_id})
-            self.sock.sendall(msg.encode())
-            response = self.sock.recv(1024).decode()
-            data = json.loads(response)
-            if data['type'] == 'CONNECTED':
+            send_msg(self.sock, {'type': 'CONNECT', 'edge_id': self.edge_id})
+            data = recv_msg(self.sock)
+            if data and data['type'] == 'CONNECTED':
                 self.connected = True
                 flush_print(f"[Edge {self.edge_id}] Aggregator confirmed connection")
         except Exception as e:
@@ -287,8 +280,9 @@ class EdgeAgent:
         proc = psutil.Process()
         proc.cpu_percent(interval=None)
         total_loss = 0
-        correct = 0
         total = 0
+        all_preds_list = []
+        all_targets_list = []
 
         for epoch in range(LOCAL_EPOCHS):
             for batch_idx, (data, target) in enumerate(self.data_loader):
@@ -301,17 +295,28 @@ class EdgeAgent:
                 self.optimizer.step()
                 total_loss += loss.item()
                 pred = output.argmax(dim=1)
-                correct += pred.eq(target).sum().item()
+                all_preds_list.append(pred.cpu())
+                all_targets_list.append(target.cpu())
                 total += target.size(0)
 
         cpu_avg = sum(cpu_samples) / len(cpu_samples) if cpu_samples else 0.0
         cpu_peak = max(cpu_samples) if cpu_samples else 0.0
         samples_trained = total
         avg_loss = total_loss / len(self.data_loader) if len(self.data_loader) > 0 else 0
-        accuracy = correct / total if total > 0 else 0
 
-        flush_print(f"[Edge {self.edge_id}] Training complete. Loss: {avg_loss:.4f}, Acc: {accuracy:.4f}, Samples: {samples_trained}")
-        return {'loss': avg_loss, 'accuracy': accuracy, 'cpu_avg': cpu_avg, 'cpu_peak': cpu_peak, 'samples_trained': samples_trained}
+        all_preds = torch.cat(all_preds_list)
+        all_targets = torch.cat(all_targets_list)
+        per_class_recall = []
+        for c in range(4):
+            mask = all_targets == c
+            if mask.sum() > 0:
+                per_class_recall.append((all_preds[mask] == c).float().mean().item())
+        balanced_acc = sum(per_class_recall) / len(per_class_recall) if per_class_recall else 0.0
+
+        flush_print(f"[Edge {self.edge_id}] Training complete. Loss: {avg_loss:.4f}, "
+                    f"Balanced Acc: {balanced_acc:.4f}, Samples: {samples_trained}")
+        return {'loss': avg_loss, 'accuracy': balanced_acc,
+                'cpu_avg': cpu_avg, 'cpu_peak': cpu_peak, 'samples_trained': samples_trained}
 
     def _create_dummy_data_loader(self):
         from torch.utils.data import Dataset, DataLoader
@@ -390,7 +395,7 @@ class EdgeAgent:
             writer.writerow(metrics)
 
     def main_loop(self):
-        self._load_data_from_udp()
+        self._connect_to_sender()
         self.connect_to_aggregator()
 
         flush_print(f"[Edge {self.edge_id}] Waiting for ROUND_START from aggregator...")
@@ -402,7 +407,9 @@ class EdgeAgent:
                     flush_print(f"[Edge {self.edge_id}] Aggregator disconnected")
                     break
                 if msg['type'] == 'ROUND_START':
-                    flush_print(f"[Edge {self.edge_id}] Received ROUND_START")
+                    round_num = msg.get('round', self.round_count)
+                    flush_print(f"[Edge {self.edge_id}] Received ROUND_START {round_num}")
+                    self._request_and_train(round_num)
                     self.run_round()
             except SystemExit:
                 raise
@@ -412,12 +419,13 @@ class EdgeAgent:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Edge Agent with UDP Crop Reception')
+    parser = argparse.ArgumentParser(description='Edge Agent with Round-by-Round UDP Streaming')
     parser.add_argument('--edge-id', type=int, required=True)
     parser.add_argument('--intersection-indices', type=int, nargs='+', required=True)
     parser.add_argument('--aggregator-host', type=str, required=True)
     parser.add_argument('--aggregator-port', type=int, default=DEFAULT_AGGREGATOR_PORT)
     parser.add_argument('--sender-port', type=int, default=DEFAULT_SENDER_PORT)
+    parser.add_argument('--sender-host', type=str, default='127.0.0.1')
     parser.add_argument('--image-dir', type=str, default=DEFAULT_IMAGE_DIR)
     parser.add_argument('--annotation-dir', type=str, default=DEFAULT_ANNOTATION_DIR)
     parser.add_argument('--max-frames-per-video', type=int, default=50)
@@ -430,6 +438,7 @@ def main():
         aggregator_host=args.aggregator_host,
         aggregator_port=args.aggregator_port,
         sender_port=args.sender_port,
+        sender_host=args.sender_host,
         image_dir=args.image_dir,
         annotation_dir=args.annotation_dir,
         max_frames_per_video=args.max_frames_per_video,

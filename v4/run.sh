@@ -48,53 +48,59 @@ case "$1" in
         python3 aggregator.py --port $AGGREGATOR_PORT
         ;;
     
-    edge0)
+edge0)
         echo "Starting Edge 0..."
         echo "  Intersections: 0-7"
         echo "  Aggregator: $AGGREGATOR_VM_IP:$AGGREGATOR_PORT"
-        echo "  Sender Port: $EDGE0_SENDER_PORT"
+        echo "  Sender Port: $EDGE0_SENDER_PORT (UDP)"
+        echo "  Sender control: 127.0.0.1:$((EDGE0_SENDER_PORT + 1)) (TCP)"
         python3 edge_agent.py \
             --edge-id 0 \
             --intersection-indices 0 1 2 3 4 5 6 7 \
             --aggregator-host $AGGREGATOR_VM_IP \
             --aggregator-port $AGGREGATOR_PORT \
-            --sender-port $EDGE0_SENDER_PORT
+            --sender-port $EDGE0_SENDER_PORT \
+            --sender-host 127.0.0.1
         ;;
-    
+
     edge1)
         echo "Starting Edge 1..."
         echo "  Intersections: 8-15"
         echo "  Aggregator: $AGGREGATOR_VM_IP:$AGGREGATOR_PORT"
-        echo "  Sender Port: $EDGE1_SENDER_PORT"
+        echo "  Sender Port: $EDGE1_SENDER_PORT (UDP)"
+        echo "  Sender control: 127.0.0.1:$((EDGE1_SENDER_PORT + 1)) (TCP)"
         python3 edge_agent.py \
             --edge-id 1 \
             --intersection-indices 8 9 10 11 12 13 14 15 \
             --aggregator-host $AGGREGATOR_VM_IP \
             --aggregator-port $AGGREGATOR_PORT \
-            --sender-port $EDGE1_SENDER_PORT
+            --sender-port $EDGE1_SENDER_PORT \
+            --sender-host 127.0.0.1
         ;;
-    
+
     edge2)
         echo "Starting Edge 2..."
         echo "  Intersections: 16-23"
         echo "  Aggregator: $AGGREGATOR_VM_IP:$AGGREGATOR_PORT"
-        echo "  Sender Port: $EDGE2_SENDER_PORT"
+        echo "  Sender Port: $EDGE2_SENDER_PORT (UDP)"
+        echo "  Sender control: 127.0.0.1:$((EDGE2_SENDER_PORT + 1)) (TCP)"
         python3 edge_agent.py \
             --edge-id 2 \
             --intersection-indices 16 17 18 19 20 21 22 23 \
             --aggregator-host $AGGREGATOR_VM_IP \
             --aggregator-port $AGGREGATOR_PORT \
-            --sender-port $EDGE2_SENDER_PORT
+            --sender-port $EDGE2_SENDER_PORT \
+            --sender-host 127.0.0.1
         ;;
     
     sender0)
         shift
         echo "Starting Sender 0..."
-        echo "  Target: $EDGE0_VM_IP:$EDGE0_SENDER_PORT"
+        echo "  Target: 127.0.0.1:$EDGE0_SENDER_PORT (UDP)"
         python3 sender.py \
             --edge-id 0 \
             --intersection-indices 0 1 2 3 4 5 6 7 \
-            --target-host $EDGE0_VM_IP \
+            --target-host 127.0.0.1 \
             --target-port $EDGE0_SENDER_PORT \
             "$@"
         ;;
@@ -102,11 +108,11 @@ case "$1" in
     sender1)
         shift
         echo "Starting Sender 1..."
-        echo "  Target: $EDGE1_VM_IP:$EDGE1_SENDER_PORT"
+        echo "  Target: 127.0.0.1:$EDGE1_SENDER_PORT (UDP)"
         python3 sender.py \
             --edge-id 1 \
             --intersection-indices 8 9 10 11 12 13 14 15 \
-            --target-host $EDGE1_VM_IP \
+            --target-host 127.0.0.1 \
             --target-port $EDGE1_SENDER_PORT \
             "$@"
         ;;
@@ -114,11 +120,11 @@ case "$1" in
     sender2)
         shift
         echo "Starting Sender 2..."
-        echo "  Target: $EDGE2_VM_IP:$EDGE2_SENDER_PORT"
+        echo "  Target: 127.0.0.1:$EDGE2_SENDER_PORT (UDP)"
         python3 sender.py \
             --edge-id 2 \
             --intersection-indices 16 17 18 19 20 21 22 23 \
-            --target-host $EDGE2_VM_IP \
+            --target-host 127.0.0.1 \
             --target-port $EDGE2_SENDER_PORT \
             "$@"
         ;;
@@ -144,6 +150,12 @@ case "$1" in
         echo "Sender options (appended after sender0/1/2):"
         echo "  --fps N       Target frames per second (default: 25)"
         echo "  --max-frames-per-video N  Max frames per folder (default: 50)"
+        echo "  --rounds N    Total rounds to partition data across (default: 100)"
+        echo ""
+        echo "Notes:"
+        echo "  - Sender stays alive and streams per-round on REQUEST_DATA from edge"
+        echo "  - Start sender BEFORE edge agent on the same VM"
+        echo "  - Edge connects to sender control on port (sender_port + 1)"
         echo ""
         echo "Examples:"
         echo "  $0 --local aggregator         # Aggregator on localhost"
