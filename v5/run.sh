@@ -10,13 +10,24 @@ if [ ! -d "$VENV_DIR" ]; then
 fi
 
 PYTHON="$VENV_DIR/bin/python3"
+MODE="${1:-kde}"
+ROUNDS="${2:-100}"
 
 echo "Starting Digital Twin Federated Learning Simulation..."
-echo "Delay model: ${1:-kde}"
-echo "Rounds: ${2:-100}"
+echo "Mode:   $MODE"
+echo "Rounds: $ROUNDS"
 echo ""
 
-$PYTHON simulator.py --delay-model "${1:-kde}" --rounds "${2:-100}"
-
-echo ""
-echo "Simulation finished. See outputs/ for metrics."
+if [ "$MODE" = "fit" ]; then
+    echo "Fitting KDE and WGAN models from baseline arrival logs..."
+    $PYTHON fit_delays.py --arrivals-dir outputs/baseline --out-dir ../v2
+else
+    $PYTHON simulator.py --mode "$MODE" --rounds "$ROUNDS" "${@:3}"
+    echo ""
+    echo "Simulation finished. Metrics in outputs/$MODE/"
+    if [ "$MODE" = "baseline" ]; then
+        echo ""
+        echo "To fit KDE/WGAN from these delays, run:"
+        echo "  ./run.sh fit"
+    fi
+fi
