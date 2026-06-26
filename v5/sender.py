@@ -6,6 +6,7 @@ import time
 import csv
 import random
 import sys
+import numpy as np
 from typing import List, Tuple, Optional
 from PIL import Image
 import numpy as np
@@ -50,9 +51,11 @@ class V5Sender:
                  fps: int = DEFAULT_FPS,
                  max_frames_per_video: int = 50,
                  num_rounds: int = DEFAULT_NUM_ROUNDS,
-                 max_crops_per_round: int = 0):
+                 max_crops_per_round: int = 0,
+                 mode: str = 'kde'):
         self.edge_id = edge_id
         self.delay_model = delay_model
+        self.mode = mode
         self.udp_port = udp_port
         self.control_port = udp_port + 1
         self.fps = fps
@@ -62,7 +65,7 @@ class V5Sender:
         self.seq_num = 0
         self.send_log = []
 
-        print(f"[V5Sender {edge_id}] Initializing with {delay_model.upper()} delay model")
+        print(f"[V5Sender {edge_id}] Mode={mode}, delay_model={delay_model}")
 
         self.cam = CameraSimulator(
             delay_model=delay_model,
@@ -125,14 +128,14 @@ class V5Sender:
         meta_bytes = json.dumps(meta).encode()
         return len(meta_bytes).to_bytes(4, 'big') + meta_bytes + crop_bytes
 
-    def _stream_round(self, round_num: int, udp_port: int, is_outage: bool):
-        host = '127.0.0.1'
+    def _stream_round(self, round_num: int, udp_port: int, is_outage: bool,
+                       edge_host: str = '127.0.0.1'):
         crops = self._get_round_crops(is_outage)
         start_time = time.time()
         source = 'OUTAGE/historical' if is_outage else 'NORMAL'
 
         print(f"[V5Sender {self.edge_id}] Round {round_num} [{source}]: "
-              f"streaming {len(crops)} crops to {host}:{udp_port}")
+              f"streaming {len(crops)} crops to {edge_host}:{udp_port}")
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -142,7 +145,7 @@ class V5Sender:
                 packet = self._build_udp_packet(
                     crop_bytes, seq, folder, frame_num, crop_idx, label
                 )
-                sock.sendto(packet, (host, udp_port))
+                sock.sendto(packet, (edge_host, udp_port))
 
                 self.send_log.append({
                     'round': round_num,
@@ -154,17 +157,26 @@ class V5Sender:
                     'send_timestamp': time.time()
                 })
 
-                elapsed = time.time() - start_time
-                expected = elapsed * self.fps
-                if (ci + 1) > expected:
-                    time.sleep(((ci + 1) - expected) / self.fps)
+                if self.mode == 'baseline':
+                    # Simulate realistic camera jitter: base FPS rate plus
+                    # gamma-distributed processing overhead (variable file I/O,
+                    # frame decode, vehicle detection latency).
+                    # shape=1.5, scale=0.15/fps gives a right-skewed tail
+                    # while keeping the mean close to 1/fps.
+                    base = 1.0 / self.fps
+                    jitter = np.random.gamma(shape=1.5, scale=base * 0.15)
+                    time.sleep(base + jitter)
+                else:
+                    delay = self.cam.sample_delay()
+                    if delay > 0:
+                        time.sleep(delay)
 
             end_meta = {'t': 'END', 'tc': len(crops), 'round': round_num,
                         'sn': self.seq_num, 'ed': self.edge_id,
                         'f': '', 'fn': 0, 'ci': 0, 'l': 0, 'ts': time.time()}
             end_bytes = json.dumps(end_meta).encode()
             end_packet = len(end_bytes).to_bytes(4, 'big') + end_bytes
-            sock.sendto(end_packet, (host, udp_port))
+            sock.sendto(end_packet, (edge_host, udp_port))
 
             elapsed = time.time() - start_time
             print(f"[V5Sender {self.edge_id}] Round {round_num} done: "
@@ -196,7 +208,8 @@ class V5Sender:
 
         while True:
             conn, addr = server.accept()
-            print(f"[V5Sender {self.edge_id}] Edge connected from {addr}")
+            edge_host = addr[0]   # edge's IP — used for UDP sends
+            print(f"[V5Sender {self.edge_id}] Edge connected from {edge_host}:{addr[1]}")
 
             while True:
                 msg = recv_msg(conn)
@@ -212,7 +225,7 @@ class V5Sender:
                     crops = self._get_round_crops(is_outage)
                     send_msg(conn, {'type': 'ACK', 'round': round_num,
                                     'total_crops': len(crops), 'is_outage': is_outage})
-                    self._stream_round(round_num, udp_port, is_outage)
+                    self._stream_round(round_num, udp_port, is_outage, edge_host)
 
                 elif msg['type'] == 'SHUTDOWN':
                     print(f"[V5Sender {self.edge_id}] Shutting down")
@@ -236,6 +249,8 @@ def main():
     parser.add_argument('--max-frames', type=int, default=50)
     parser.add_argument('--rounds', type=int, default=DEFAULT_NUM_ROUNDS)
     parser.add_argument('--max-crops-per-round', type=int, default=0)
+    parser.add_argument('--mode', type=str, default='kde',
+                        choices=['baseline', 'kde', 'wgan'])
     args = parser.parse_args()
 
     sender = V5Sender(
@@ -246,6 +261,7 @@ def main():
         max_frames_per_video=args.max_frames,
         num_rounds=args.rounds,
         max_crops_per_round=args.max_crops_per_round,
+        mode=args.mode,
     )
     sender.serve()
 

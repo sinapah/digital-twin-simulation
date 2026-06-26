@@ -23,13 +23,16 @@ def flush_print(*args, **kwargs):
 class Simulator:
     def __init__(self, delay_model: str = 'kde', num_rounds: int = NUM_ROUNDS,
                  max_frames: int = 50, max_crops_per_round: int = 0,
-                 sender_fps: int = 500, mode: str = 'kde'):
+                 sender_fps: int = 500, mode: str = 'kde',
+                 sender_hosts: list = None):
         self.delay_model = delay_model if mode != 'baseline' else 'kde'
         self.mode = mode
         self.num_rounds = num_rounds
         self.max_frames = max_frames
         self.max_crops_per_round = max_crops_per_round
         self.sender_fps = sender_fps
+        # None = spawn local subprocesses; list of IPs = remote VMs
+        self.sender_hosts = sender_hosts
         self.camera = CameraSimulator(delay_model=self.delay_model)
         self.aggregator = Aggregator(port=AGGREGATOR_PORT, num_rounds=num_rounds)
         self.edge_processes = []
@@ -48,6 +51,10 @@ class Simulator:
         flush_print(f"Max frames per video: {max_frames}")
         if max_crops_per_round:
             flush_print(f"Max crops per round: {max_crops_per_round}")
+        if sender_hosts:
+            flush_print(f"Sender VMs: {sender_hosts}")
+        else:
+            flush_print(f"Senders: local subprocesses")
         flush_print(f"{'='*60}\n")
 
     def _run_aggregator(self):
@@ -88,43 +95,56 @@ class Simulator:
         edge_script = os.path.join(v5_dir, 'edge_agent.py')
         venv_python = sys.executable
 
-        # Start senders first (they pre-load data, then wait for edge connections)
-        for i in range(NUM_EDGES):
-            udp_port = BASE_UDP_PORT + i * 2
-            sender_cores = f"{6 + i},{7 + i}"   # cores 6-8 for senders
-            flush_print(f"[Simulator] Sender {i} on cores {sender_cores}, "
-                        f"UDP {udp_port}, control {udp_port + 1}")
-            extra = []
-            if self.max_crops_per_round:
-                extra = ['--max-crops-per-round', str(self.max_crops_per_round)]
-            proc = subprocess.Popen(
-                ['taskset', '-c', sender_cores, venv_python, sender_script,
-                 '--edge-id', str(i),
-                 '--delay-model', self.delay_model,
-                 '--udp-port', str(udp_port),
-                 '--fps', str(self.sender_fps),
-                 '--max-frames', str(self.max_frames),
-                 '--rounds', str(self.num_rounds)] + extra,
-                stdout=sys.stdout, stderr=sys.stderr,
-                cwd=v5_dir,
-            )
-            self.sender_processes.append(proc)
-            time.sleep(0.5)
+        if self.sender_hosts:
+            # Remote senders on separate VMs — just tell user to start them
+            flush_print(f"[Simulator] Using remote senders. Start each sender VM:")
+            for i, host in enumerate(self.sender_hosts):
+                udp_port = BASE_UDP_PORT + i * 2
+                flush_print(f"  Sender {i} on {host}: "
+                            f"./run.sh sender{i} --mode {self.mode} "
+                            f"--udp-port {udp_port} --fps {self.sender_fps}")
+            flush_print(f"[Simulator] Waiting for all edges to connect to their senders...\n")
+        else:
+            # Local senders — spawn as subprocesses
+            for i in range(NUM_EDGES):
+                udp_port = BASE_UDP_PORT + i * 2
+                sender_cores = f"{6 + i},{7 + i}"
+                flush_print(f"[Simulator] Sender {i} on cores {sender_cores}, "
+                            f"UDP {udp_port}, control {udp_port + 1}")
+                extra = []
+                if self.max_crops_per_round:
+                    extra = ['--max-crops-per-round', str(self.max_crops_per_round)]
+                proc = subprocess.Popen(
+                    ['taskset', '-c', sender_cores, venv_python, sender_script,
+                     '--edge-id', str(i),
+                     '--mode', self.mode,
+                     '--delay-model', self.delay_model,
+                     '--udp-port', str(udp_port),
+                     '--fps', str(self.sender_fps),
+                     '--max-frames', str(self.max_frames),
+                     '--rounds', str(self.num_rounds)] + extra,
+                    stdout=sys.stdout, stderr=sys.stderr,
+                    cwd=v5_dir,
+                )
+                self.sender_processes.append(proc)
+                time.sleep(0.5)
 
-        flush_print(f"[Simulator] Senders starting, edges will retry until ready...")
-        time.sleep(2)
+            flush_print(f"[Simulator] Senders starting, edges will retry until ready...")
+            time.sleep(2)
 
-        # Start edges (each connects to its sender, then the aggregator)
+        # Start edges — each connects to its sender (local or remote) then the aggregator
         for i in range(NUM_EDGES):
             udp_port = BASE_UDP_PORT + i * 2
             edge_cores = f"{i * 2},{i * 2 + 1}"
+            sender_host = self.sender_hosts[i] if self.sender_hosts else '127.0.0.1'
             flush_print(f"[Simulator] Edge {i} on cores {edge_cores}, "
-                        f"UDP port {udp_port}")
+                        f"UDP port {udp_port}, sender at {sender_host}")
             proc = subprocess.Popen(
                 ['taskset', '-c', edge_cores, venv_python, edge_script,
                  '--edge-id', str(i),
                  '--aggregator-port', str(AGGREGATOR_PORT),
                  '--udp-port', str(udp_port),
+                 '--sender-host', sender_host,
                  '--output-dir', self.output_dir,
                  '--rounds', str(self.num_rounds)],
                 stdout=sys.stdout, stderr=sys.stderr,
@@ -166,6 +186,9 @@ def main():
     parser.add_argument('--max-crops-per-round', type=int, default=0,
                         help='Limit crops per round per edge (0 = unlimited)')
     parser.add_argument('--sender-fps', type=int, default=500)
+    parser.add_argument('--sender-hosts', type=str, nargs=3, default=None,
+                        metavar=('HOST0', 'HOST1', 'HOST2'),
+                        help='IPs of 3 remote sender VMs (omit to use local subprocesses)')
     args = parser.parse_args()
 
     delay_model = args.delay_model or ('kde' if args.mode in ('baseline', 'kde') else 'wgan')
@@ -177,6 +200,7 @@ def main():
         max_crops_per_round=args.max_crops_per_round,
         sender_fps=args.sender_fps,
         mode=args.mode,
+        sender_hosts=args.sender_hosts,
     )
     sim.run()
 

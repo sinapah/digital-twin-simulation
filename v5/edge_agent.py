@@ -167,24 +167,24 @@ class EdgeAgent:
         flush_print(f"[Edge {edge_id}] UDP port: {udp_port}, "
                     f"sender control: {self.sender_control_port}")
 
-    def connect_to_sender(self):
+    def connect_to_sender(self, host: str = '127.0.0.1'):
         self.sender_conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sender_conn.settimeout(60.0)
         for attempt in range(30):
             try:
-                self.sender_conn.connect(('127.0.0.1', self.sender_control_port))
+                self.sender_conn.connect((host, self.sender_control_port))
                 flush_print(f"[Edge {self.edge_id}] Connected to sender control "
-                            f"on port {self.sender_control_port}")
+                            f"at {host}:{self.sender_control_port}")
                 return
             except ConnectionRefusedError:
                 if attempt == 0:
                     flush_print(f"[Edge {self.edge_id}] Waiting for sender on "
-                                f"port {self.sender_control_port}...")
+                                f"{host}:{self.sender_control_port}...")
                 time.sleep(2)
                 self.sender_conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self.sender_conn.settimeout(60.0)
         raise ConnectionRefusedError(
-            f"Sender not available on port {self.sender_control_port} after 60s")
+            f"Sender not available at {host}:{self.sender_control_port} after 60s")
 
     def connect_to_aggregator(self):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -361,6 +361,8 @@ def main():
     parser.add_argument('--aggregator-host', type=str, default='127.0.0.1')
     parser.add_argument('--aggregator-port', type=int, default=AGGREGATOR_PORT)
     parser.add_argument('--udp-port', type=int, default=DEFAULT_UDP_PORT)
+    parser.add_argument('--sender-host', type=str, default='127.0.0.1',
+                        help='IP of sender VM (default: 127.0.0.1)')
     parser.add_argument('--output-dir', type=str, default='outputs')
     parser.add_argument('--rounds', type=int, default=100)
     args = parser.parse_args()
@@ -372,7 +374,7 @@ def main():
         udp_port=args.udp_port,
         output_dir=args.output_dir,
     )
-    agent.connect_to_sender()
+    agent.connect_to_sender(host=args.sender_host)
     agent.connect_to_aggregator()
 
     flush_print(f"[Edge {args.edge_id}] Waiting for ROUND_START...")
