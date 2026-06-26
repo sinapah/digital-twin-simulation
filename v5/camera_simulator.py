@@ -62,6 +62,38 @@ class CameraSimulator:
             if os.path.exists(os.path.join(self.annotation_dir, f"{f}.xml"))
         ]
 
+        # Sort by class diversity so diverse folders are spread across edges.
+        # Interleave: pick one from each diversity tier per edge rather than
+        # assigning the top-7 to edge 0, next-7 to edge 1, etc.
+        import xml.etree.ElementTree as ET
+
+        def diversity_score(folder):
+            xml_path = os.path.join(self.annotation_dir, f"{folder}.xml")
+            try:
+                root = ET.parse(xml_path).getroot()
+                classes = set()
+                for frame in root.findall('.//frame'):
+                    if int(frame.get('num')) > self.max_frames_per_video:
+                        break
+                    for t in frame.findall('.//target'):
+                        classes.add(t.find('attribute').get('vehicle_type'))
+                return len(classes)
+            except Exception:
+                return 0
+
+        annotated.sort(key=diversity_score, reverse=True)
+
+        # Interleave: slot 0 → edge 0, slot 1 → edge 1, slot 2 → edge 2,
+        # slot 3 → edge 0, slot 4 → edge 1, ... etc.
+        interleaved = [[] for _ in range(NUM_EDGES + 1)]  # +1 for historical pool
+        for idx, folder in enumerate(annotated):
+            bucket = idx % (NUM_EDGES + 1)
+            interleaved[bucket].append(folder)
+
+        # Each edge gets VIDEOS_PER_EDGE from its interleaved bucket
+        # topped up from the historical pool if needed
+        pool = interleaved[NUM_EDGES]  # leftover bucket used for historical + top-up
+
         if len(annotated) < TOTAL_VIDEOS:
             print(f"WARNING: Only {len(annotated)} annotated UA-DETRAC folders found, "
                   f"need {TOTAL_VIDEOS}")
@@ -69,20 +101,26 @@ class CameraSimulator:
             self.historical_folders = []
             return
 
-        self.edge_folders = [
-            annotated[i * VIDEOS_PER_EDGE:(i + 1) * VIDEOS_PER_EDGE]
-            for i in range(NUM_EDGES)
-        ]
+        self.edge_folders = []
+        for i in range(NUM_EDGES):
+            bucket = interleaved[i][:VIDEOS_PER_EDGE]
+            # top up from pool if bucket is short
+            while len(bucket) < VIDEOS_PER_EDGE and pool:
+                bucket.append(pool.pop(0))
+            self.edge_folders.append(bucket)
 
-        hist_start = NUM_EDGES * VIDEOS_PER_EDGE
-        self.historical_folders = annotated[hist_start:hist_start + HISTORICAL_FOLDERS]
+        self.historical_folders = pool[:HISTORICAL_FOLDERS]
 
         print(f"CameraSimulator: {delay_model.upper()} delay model")
         for i in range(NUM_EDGES):
             print(f"  Edge {i} videos: {self.edge_folders[i]}")
             print(f"  Edge {i} historical: {self.historical_folders[i]}")
 
-    def schedule_outages(self, num_rounds: int = 100) -> List[Tuple[int, int]]:
+    def schedule_outages(self, num_rounds: int = 100,
+                          baseline: bool = False) -> List[Tuple[int, int]]:
+        if baseline:
+            print("  Baseline mode: no outages scheduled")
+            return [(-1, -1)] * NUM_EDGES
         if num_rounds < 30:
             return [(0, 0), (0, 0), (0, 0)]
         gap = (num_rounds - 20) // NUM_EDGES

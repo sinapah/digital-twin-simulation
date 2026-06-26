@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Combined CPU usage plot: 4 miniplots (2x2 grid).
-v5 Baseline explicitly moved to the top right. Y-axis locked between 170% and 210%.
+Combined Accuracy usage plot: 4 miniplots (2x2 grid).
+v5 Baseline explicitly moved to the top right. Y-axis locked between 0.0 and 1.05.
 Uses solid lines with distinct, clear colors per Edge agent.
 """
 
@@ -14,7 +14,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # 2. Rebuild the directory layout relative to the script's home location
 RUNS = {
-    'v4 (real)':   os.path.abspath(os.path.join(SCRIPT_DIR, '..', '..', 'v4', 'outputs')),
+    'Real system':   os.path.abspath(os.path.join(SCRIPT_DIR, '..', '..', 'v4', 'outputs')),
     'DT with no outage': os.path.abspath(os.path.join(SCRIPT_DIR, '..', 'outputs', 'baseline')),
     'DT with KDE delays':      os.path.abspath(os.path.join(SCRIPT_DIR, '..', 'outputs', 'kde')),
     'DT with WGAN delays':     os.path.abspath(os.path.join(SCRIPT_DIR, '..', 'outputs', 'wgan')),
@@ -49,12 +49,12 @@ for run_label, run_dir in RUNS.items():
         try:
             df = pd.read_csv(path)
             
-            # Plot metrics directly using specific colors for each edge agent
+            # Plot accuracy directly using specific colors for each edge agent
             ax.plot(
-                df['round'], df['cpu_avg'],
+                df['round'], df['accuracy'],
                 color=COLORS[edge_id],
                 linestyle='-',          # Strictly solid lines for all edges
-                linewidth=2.5,          # Slightly boosted width for clearer visibility
+                linewidth=2.5,          # Slightly thicker for optimal visibility
                 label=f'Edge {edge_id}',
                 alpha=0.85,
             )
@@ -65,20 +65,20 @@ for run_label, run_dir in RUNS.items():
     # Customize individual miniplot parameters
     ax.set_title(run_label, fontsize=12, fontweight='bold')
     ax.grid(True, linestyle='--', alpha=0.5)
-    ax.legend(fontsize=10, loc='upper right')
+    ax.legend(fontsize=10, loc='lower right')  # Lower right is usually ideal for tracking upward accuracy lines
     
-    # Set the Y-axis range strictly from 170 to 210
-    ax.set_ylim(170, 210)
+    # Set the Y-axis range strictly from 0.0 to 1.05 to clearly monitor bounds
+    ax.set_ylim(-0.05, 1.05)
 
 # Set unified global labels across outer framework
 fig.supxlabel('Round', fontsize=13)
-fig.supylabel('CPU Usage (%)', fontsize=13)
-fig.suptitle('CPU Usage Comparison across Edge Nodes', fontsize=16, fontweight='bold', y=0.98)
+fig.supylabel('Accuracy', fontsize=13)
+fig.suptitle('Accuracy Comparison across Edge Nodes', fontsize=16, fontweight='bold', y=0.98)
 
 plt.tight_layout()
 
 # Save the unified graphic canvas
-save_path = os.path.join(SCRIPT_DIR, 'stacked_cpu_plots.png')
+save_path = os.path.join(SCRIPT_DIR, 'stacked_accuracy_plots.png')
 plt.savefig(save_path, dpi=300, bbox_inches='tight')
 print(f"Success! Saved graphic to: {save_path}")
 

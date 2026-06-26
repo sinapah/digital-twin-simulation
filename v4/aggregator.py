@@ -119,10 +119,9 @@ class Aggregator:
             sock, addr = server_sock.accept()
             flush_print(f"[Aggregator] Connection from {addr}")
 
-            data = sock.recv(1024).decode()
-            msg = json.loads(data)
+            msg = recv_msg(sock)
 
-            if msg['type'] == 'CONNECT':
+            if msg and msg['type'] == 'CONNECT':
                 edge_id = msg['edge_id']
                 with self.lock:
                     self.edges[edge_id] = EdgeConnection(
@@ -132,8 +131,7 @@ class Aggregator:
                 connected_count += 1
                 flush_print(f"[Aggregator] Edge {edge_id} connected ({connected_count}/{NUM_EDGES})")
 
-                response = json.dumps({'type': 'CONNECTED', 'round': 0})
-                sock.sendall(response.encode())
+                send_msg(sock, {'type': 'CONNECTED', 'round': 0})
 
                 message_thread = threading.Thread(target=self._handle_edge_messages, args=(edge_id,))
                 message_thread.daemon = True
