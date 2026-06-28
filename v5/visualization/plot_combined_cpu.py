@@ -14,7 +14,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # 2. Rebuild the directory layout relative to the script's home location
 RUNS = {
-    'v4 (real)':   os.path.abspath(os.path.join(SCRIPT_DIR, '..', '..', 'v4', 'outputs')),
+    'Real system':   os.path.abspath(os.path.join(SCRIPT_DIR, '..', '..', 'v4', 'outputs')),
     'DT with no outage': os.path.abspath(os.path.join(SCRIPT_DIR, '..', 'outputs', 'baseline')),
     'DT with KDE delays':      os.path.abspath(os.path.join(SCRIPT_DIR, '..', 'outputs', 'kde')),
     'DT with WGAN delays':     os.path.abspath(os.path.join(SCRIPT_DIR, '..', 'outputs', 'wgan')),
