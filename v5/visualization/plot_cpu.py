@@ -10,7 +10,8 @@ import os
 import glob
 
 
-def load_edge_metrics(outputs_dir="../outputs"):
+def load_edge_metrics(scenario="baseline"):
+    outputs_dir=f"../outputs/{scenario}"
     """Load metrics CSV files for all edges."""
     edge_data = {}
 
@@ -60,7 +61,7 @@ def plot_cpu_usage(edge_data, save_path="cpu_usage.png"):
     plt.xlabel("Round", fontsize=12)
     plt.ylabel("Average CPU Usage (%)", fontsize=12)
     plt.title(
-        "Average CPU Usage Across Edges In the Physical System",
+        "Average CPU Usage Across Edges In the Digital Twin",
         fontsize=14,
         fontweight="bold",
     )
@@ -70,9 +71,8 @@ def plot_cpu_usage(edge_data, save_path="cpu_usage.png"):
 
     plt.grid(True, alpha=0.3)
     plt.legend(fontsize=11)
-    plt.tight_layout()
 
-    plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    plt.savefig(save_path)
     print(f"Plot saved to {save_path}")
 
     plt.close()
@@ -96,7 +96,7 @@ def main():
     print("Creating CPU usage plot...")
     plot_cpu_usage(
         edge_data,
-        save_path=os.path.join(viz_dir, "cpu_usage.png"),
+        save_path=os.path.join(viz_dir, "cpu_usage_baseline.pdf"),
     )
 
     print("Done!")
