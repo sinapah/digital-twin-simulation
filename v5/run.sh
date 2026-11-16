@@ -25,7 +25,7 @@ case "$MODE" in
 
   sender0|sender1|sender2)
     # Run a sender for a specific edge — used when sender is on a separate VM.
-    # Usage: ./run.sh sender0 [--mode baseline|kde|wgan] [--fps 25] [--rounds 100]
+    # Usage: ./run.sh sender0 [--mode baseline|outage|kde|wgan] [--fps 25] [--rounds 100]
     EDGE_ID="${MODE: -1}"
     UDP_PORT=$((7000 + EDGE_ID * 2))
     shift
@@ -38,7 +38,7 @@ case "$MODE" in
       "${@}"
     ;;
 
-  baseline|kde|wgan)
+  baseline|outage|kde|wgan)
     # Run the full simulation.
     # With remote senders: ./run.sh kde 100 <host0> <host1> <host2>
     # Without (local):     ./run.sh kde 100
@@ -76,6 +76,7 @@ case "$MODE" in
     echo "Usage:"
     echo "  ./run.sh baseline [rounds]                          # Collect real delays"
     echo "  ./run.sh fit                                        # Fit KDE/WGAN from baseline"
+    echo "  ./run.sh outage [rounds]                            # Outages, historical frames unpaced"
     echo "  ./run.sh kde [rounds]                               # Simulate with KDE delays"
     echo "  ./run.sh wgan [rounds]                              # Simulate with WGAN delays"
     echo ""

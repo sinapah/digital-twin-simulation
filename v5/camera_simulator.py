@@ -23,6 +23,9 @@ VIDEOS_PER_EDGE = 7
 HISTORICAL_FOLDERS = 3
 TOTAL_VIDEOS = NUM_EDGES * VIDEOS_PER_EDGE + HISTORICAL_FOLDERS
 
+# Inclusive (start, end) outage rounds per edge.
+FIXED_OUTAGES = [(15, 25), (45, 55), (75, 85)]
+
 
 def load_delays(filepath: str) -> List[float]:
     delays = []
@@ -121,18 +124,12 @@ class CameraSimulator:
         if baseline:
             print("  Baseline mode: no outages scheduled")
             return [(-1, -1)] * NUM_EDGES
-        if num_rounds < 30:
-            return [(0, 0), (0, 0), (0, 0)]
-        gap = (num_rounds - 20) // NUM_EDGES
-        outages = []
-        for edge_id in range(NUM_EDGES):
-            center = 10 + edge_id * gap
-            duration = random.randint(5, min(15, gap - 5))
-            start = center - duration // 2
-            end = start + duration
-            outages.append((start, end))
+        outages = list(FIXED_OUTAGES)
+        if num_rounds <= outages[-1][1]:
+            print(f"  WARNING: {num_rounds} rounds is too short for the fixed "
+                  f"outage windows; use at least {outages[-1][1] + 1}")
         for i, (s, e) in enumerate(outages):
-            print(f"  Edge {i} outage: rounds {s}-{e} ({e - s} rounds)")
+            print(f"  Edge {i} outage: rounds {s}-{e} ({e - s + 1} rounds)")
         return outages
 
     def sample_delay(self) -> float:

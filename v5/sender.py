@@ -157,7 +157,11 @@ class V5Sender:
                     'send_timestamp': time.time()
                 })
 
-                if self.mode == 'baseline':
+                if self.mode == 'outage' and is_outage:
+                    # Control: outage data is sent back-to-back, no pacing.
+                    continue
+
+                if self.mode in ('baseline', 'outage'):
                     # Simulate realistic camera jitter: base FPS rate plus
                     # gamma-distributed processing overhead (variable file I/O,
                     # frame decode, vehicle detection latency).
@@ -250,7 +254,7 @@ def main():
     parser.add_argument('--rounds', type=int, default=DEFAULT_NUM_ROUNDS)
     parser.add_argument('--max-crops-per-round', type=int, default=0)
     parser.add_argument('--mode', type=str, default='kde',
-                        choices=['baseline', 'kde', 'wgan'])
+                        choices=['baseline', 'outage', 'kde', 'wgan'])
     args = parser.parse_args()
 
     sender = V5Sender(

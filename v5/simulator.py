@@ -25,7 +25,7 @@ class Simulator:
                  max_frames: int = 50, max_crops_per_round: int = 0,
                  sender_fps: int = 500, mode: str = 'kde',
                  sender_hosts: list = None):
-        self.delay_model = delay_model if mode != 'baseline' else 'kde'
+        self.delay_model = delay_model if mode not in ('baseline', 'outage') else 'kde'
         self.mode = mode
         self.num_rounds = num_rounds
         self.max_frames = max_frames
@@ -175,8 +175,9 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description='Digital Twin Federated Learning Simulator')
     parser.add_argument('--mode', type=str, default='kde',
-                        choices=['baseline', 'kde', 'wgan'],
+                        choices=['baseline', 'outage', 'kde', 'wgan'],
                         help='baseline=no outages (collect real delays); '
+                             'outage=outages with historical frames sent unpaced; '
                              'kde/wgan=use fitted synthetic delays with outages')
     parser.add_argument('--delay-model', type=str, default=None,
                         choices=['kde', 'wgan'],
@@ -191,7 +192,7 @@ def main():
                         help='IPs of 3 remote sender VMs (omit to use local subprocesses)')
     args = parser.parse_args()
 
-    delay_model = args.delay_model or ('kde' if args.mode in ('baseline', 'kde') else 'wgan')
+    delay_model = args.delay_model or ('kde' if args.mode in ('baseline', 'outage', 'kde') else 'wgan')
 
     sim = Simulator(
         delay_model=delay_model,
