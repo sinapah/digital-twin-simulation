@@ -11,6 +11,7 @@ Writes: ../v2/synthetic_interarrival_kde.csv
 """
 
 import argparse
+import copy
 import glob
 import os
 import sys
@@ -72,6 +73,16 @@ def fit_and_sample_kde(delays: np.ndarray, n_samples: int) -> np.ndarray:
     return samples
 
 
+def _ks_stat(a: np.ndarray, b: np.ndarray) -> float:
+    """Two-sample Kolmogorov-Smirnov statistic (scipy is not in the v4 venv)."""
+    a = np.sort(a)
+    b = np.sort(b)
+    grid = np.concatenate([a, b])
+    cdf_a = np.searchsorted(a, grid, side='right') / len(a)
+    cdf_b = np.searchsorted(b, grid, side='right') / len(b)
+    return float(np.max(np.abs(cdf_a - cdf_b)))
+
+
 def fit_and_sample_wgan(delays: np.ndarray, n_samples: int) -> np.ndarray:
     """
     Lightweight conditional WGAN-GP in pure PyTorch.
@@ -87,7 +98,7 @@ def fit_and_sample_wgan(delays: np.ndarray, n_samples: int) -> np.ndarray:
 
     LATENT = 32
     HIDDEN = 64
-    EPOCHS = 300
+    EPOCHS = 3000
     BATCH = 256
     N_CRITIC = 5
     GP_LAMBDA = 10
@@ -123,12 +134,15 @@ def fit_and_sample_wgan(delays: np.ndarray, n_samples: int) -> np.ndarray:
                                     create_graph=True)[0]
         return ((grads.norm(2, dim=1) - 1) ** 2).mean()
 
-    data = torch.FloatTensor(delays).unsqueeze(1)
+    # Scale delays to mean 1 so the Softplus generator output can reach their range.
+    scale = delays.mean()
+    data = torch.FloatTensor(delays / scale).unsqueeze(1)
     G = Generator()
     C = Critic()
     opt_g = optim.Adam(G.parameters(), lr=1e-4, betas=(0.5, 0.9))
     opt_c = optim.Adam(C.parameters(), lr=1e-4, betas=(0.5, 0.9))
 
+    best_ks, best_state = float('inf'), None
     for epoch in range(EPOCHS):
         idx = torch.randperm(len(data))[:BATCH]
         real = data[idx]
@@ -142,14 +156,34 @@ def fit_and_sample_wgan(delays: np.ndarray, n_samples: int) -> np.ndarray:
         opt_g.zero_grad(); loss_g.backward(); opt_g.step()
 
         if (epoch + 1) % 100 == 0:
+            with torch.no_grad():
+                probe = G(torch.randn(10000, LATENT)).squeeze().numpy() * scale
+            ks = _ks_stat(probe[probe > 0], delays)
+            if ks < best_ks:
+                best_ks = ks
+                best_state = copy.deepcopy(G.state_dict())
             print(f"  WGAN epoch {epoch+1}/{EPOCHS} — "
-                  f"C loss: {loss_c.item():.4f}, G loss: {loss_g.item():.4f}")
+                  f"C loss: {loss_c.item():.4f}, G loss: {loss_g.item():.4f}, "
+                  f"KS: {ks:.4f} (best {best_ks:.4f})")
+
+    G.load_state_dict(best_state)
 
     with torch.no_grad():
         z = torch.randn(n_samples, LATENT)
-        samples = G(z).squeeze().numpy()
+        samples = G(z).squeeze().numpy() * scale
 
-    print(f"  WGAN trained and sampled {n_samples} values")
+    # Enforce the same constraints as the v2 WGAN script.
+    samples = samples[samples > 0]
+    upper = np.percentile(delays, 99.5)
+    samples = np.clip(samples, 0, upper)
+
+    # Refuse to write a delay file whose distribution does not match the real arrivals.
+    ks = _ks_stat(samples, delays)
+    if ks > 0.1:
+        raise RuntimeError(f"WGAN output KS vs real delays is {ks:.4f} (> 0.1); "
+                           f"not writing output")
+
+    print(f"  WGAN trained and sampled {len(samples)} values")
     return samples
 
 
